@@ -22,6 +22,7 @@ alfa_rag_project/
     ├── generator.py    # LLM generation with brevity constraints
     ├── main.py         # Pipeline orchestrator (Ollama/local)
     ├── kaggle_main.py  # Kaggle-optimized pipeline (Hugging Face)
+    ├── OR_main.py      # OpenRouter API pipeline
     ├── __main__.py     # Entry point for `python -m main`
     └── __init__.py     # Package exports
 ```
@@ -56,6 +57,17 @@ python kaggle_main.py --build-index --model qwen2.5-7b
 - `qwen2-7b` - Qwen/Qwen2-7B-Instruct
 - `mistral-7b` - Mistral-7B-Instruct-v0.3
 - `llama3-8b` - Meta-Llama-3-8B-Instruct
+
+### OpenRouter (OR_main.py) - API-based inference
+```bash
+# Set API key
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Run
+python OR_main.py --model qwen2.5-7b
+```
+
+No model downloads - uses OpenRouter API for open-source models.
 
 ## Key Features
 
