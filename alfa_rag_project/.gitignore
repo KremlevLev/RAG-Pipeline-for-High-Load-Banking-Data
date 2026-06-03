@@ -44,8 +44,8 @@ data/answer_cache.json
 data/submission_checkpoint_*.csv
 
 # Model cache (Hugging Face)
-~/.cache/huggingface/
-~/.cache/torch/
+.cache/huggingface/
+.cache/torch/
 model_cache/
 
 # Logs
