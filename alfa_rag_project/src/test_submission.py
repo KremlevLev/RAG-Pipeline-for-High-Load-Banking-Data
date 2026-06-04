@@ -4,6 +4,7 @@ Processes first 200 questions for quick testing.
 """
 
 import sys
+import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -21,6 +22,17 @@ from chunker import chunk_all_websites
 from generator import create_generator
 from indexer import build_and_save_index, load_index
 from retriever import create_retriever
+
+# ─────────────────────────────────────────────
+# Логирование
+# ─────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 def run_test_submission(
@@ -69,10 +81,18 @@ def run_test_submission(
         query = row["query"]
         
         # Retrieve context
-        context = retriever.get_context(query)
+        try:
+            context = retriever.get_context(query)
+        except Exception as e:
+            logger.error("Retriever failed for q_id=%s: %s", q_id, e)
+            context = ""
         
         # Generate answer
-        answer = generator.generate(query, context)
+        try:
+            answer = generator.generate(query, context)
+        except Exception as e:
+            logger.error("Generator failed for q_id=%s: %s", q_id, e)
+            answer = "Недостаточно информации"
         
         results.append({
             "q_id": q_id,
@@ -90,6 +110,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Test RAG Pipeline")
+    
     parser.add_argument(
         "--build-index",
         action="store_true",

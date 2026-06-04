@@ -14,9 +14,11 @@ from openai import OpenAI
 from config import (
     LLM_BASE_URL,
     LLM_MODEL,
+    MAX_SENTENCES,
     MAX_RESPONSE_WORDS,
     MAX_RESPONSE_CHARS,
     TEMPERATURE,
+    LLM_TIMEOUT,
 )
 
 
@@ -215,11 +217,15 @@ class _ScoredSentence:
     position: int  # Позиция в оригинальном тексте
 
 
-# System prompt enforcing extreme brevity
+# System prompt enforcing strict context-based answers
 SYSTEM_PROMPT = """
-Ты - полезный ассистент. Отвечай максимально кратко: 1-2 предложения, без воды и лишних объяснений.
-Не используй вводные фразы вроде "Вот что я нашел" или "На основе информации".
-Сразу переходи к сути. Если информации недостаточно - скажи "Недостаточно информации".
+Ты суровый банковский AI-аналитик. Отвечай на вопрос строго на основе предоставленного текста.
+
+ПРАВИЛА:
+1. Выдавай ТОЛЬКО факты из контекста. Никаких приветствий и лишних слов.
+2. Если в контексте нет прямого ответа на вопрос, верни ровно два слова: "Недостаточно информации".
+3. Отвечай максимально емко. Объединяй длинные списки в одно-два предложения через запятую.
+4. Твой ответ не должен превышать 3 предложений.
 """.strip()
 
 
@@ -267,7 +273,7 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     """
     Truncate text to maximum character count.
     
-    This is the PRIMARY truncation for BERT-Recall-L compliance.
+    This is a SAFETY limit to prevent 3x length penalty.
     Cuts at the last complete sentence boundary before the limit.
     
     Args:
@@ -296,6 +302,28 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     
     # Hard cut as last resort
     return truncated
+
+
+def truncate_to_sentences(text: str, max_sentences: int) -> str:
+    """
+    Truncate text to maximum number of sentences.
+    
+    This is the PRIMARY truncation for BERT-Recall-L compliance.
+    Preserves complete sentences for maximum information density.
+    
+    Args:
+        text: Input text
+        max_sentences: Maximum number of sentences
+        
+    Returns:
+        Truncated text
+    """
+    sentences = [s.text.strip() for s in razdel.sentenize(text) if s.text.strip()]
+    
+    if len(sentences) <= max_sentences:
+        return text
+    
+    return " ".join(sentences[:max_sentences])
 
 
 def word_matches(word: str, text: str) -> bool:
@@ -354,7 +382,7 @@ def extract_answer_from_context(
         3. Исключает предложения, дублирующие вопрос.
         4. Ранжирует по TF-IDF + позиция + информативность.
         5. Собирает топ-N предложений в связный ответ.
-        6. ПРИМЕНЯЕТ ОБЯЗАТЕЛЬНУЮ обрезку по символам.
+        6. ПРИМЕНЯЕТ обрезку по предложениям.
     
     Args:
         query: Вопрос пользователя.
@@ -479,7 +507,11 @@ def extract_answer_from_context(
     
     answer = " ".join(s.text for s in top_sentences)
     
-    # ── Шаг 8: ОБЯЗАТЕЛЬНАЯ обрезка по символам ─────────────
+    # ── Шаг 8: Обрезка по предложениям (основной лимит) ───────
+    
+    answer = truncate_to_sentences(answer, MAX_SENTENCES)
+    
+    # ── Шаг 9: Safety обрезка по символам ─────────────────────
     
     answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
     
@@ -503,7 +535,7 @@ class Generator:
             base_url: OpenAI-compatible API base URL
             model: Model name
         """
-        self.client = OpenAI(base_url=base_url, api_key="ollama")
+        self.client = OpenAI(base_url=base_url, api_key="ollama", timeout=LLM_TIMEOUT)
         self.model = model
     
     def generate(self, query: str, context: str) -> str:
@@ -515,7 +547,7 @@ class Generator:
             context: Retrieved context from retriever
             
         Returns:
-            Generated answer (truncated to max words and chars)
+            Generated answer (truncated to max sentences and chars)
         """
         if not context:
             return "Недостаточно информации"
@@ -538,12 +570,13 @@ class Generator:
                 ],
                 temperature=TEMPERATURE,
                 max_tokens=256,  # Conservative limit
+                timeout=LLM_TIMEOUT,
             )
             
             answer = response.choices[0].message.content or ""
             
-            # Post-process: truncate to max words first, then chars
-            answer = truncate_to_words(answer, MAX_RESPONSE_WORDS)
+            # Post-process: truncate to max sentences first, then chars
+            answer = truncate_to_sentences(answer, MAX_SENTENCES)
             answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
             
             return answer.strip()

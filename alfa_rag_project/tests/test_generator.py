@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from generator import (
     truncate_to_words,
     truncate_to_chars,
+    truncate_to_sentences,
     normalize_text,
     word_matches,
     clean_sentence,
@@ -25,43 +26,43 @@ class TestTruncateToWords:
     def test_short_text_unchanged(self) -> None:
         """Test short text is not modified."""
         text = "Короткий ответ"
-        result = truncate_to_words(text, max_words=30)
+        result = truncate_to_words(text, max_words=50)
         assert result == text
     
     def test_long_text_truncated(self) -> None:
         """Test long text is truncated."""
-        words = ["слово"] * 50
+        words = ["слово"] * 100
         text = " ".join(words)
-        result = truncate_to_words(text, max_words=30)
-        assert len(result.split()) == 30
+        result = truncate_to_words(text, max_words=50)
+        assert len(result.split()) == 50
     
     def test_truncation_at_sentence_end(self) -> None:
         """Test truncation tries to end at sentence boundary."""
-        text = "Первое предложение. Второе предложение. Третье предложение. " + " ".join(["слово"] * 50)
-        result = truncate_to_words(text, max_words=30)
+        text = "Первое предложение. Второе предложение. Третье предложение. " + " ".join(["слово"] * 100)
+        result = truncate_to_words(text, max_words=50)
         # Should end at a sentence boundary if possible
-        assert result.endswith(".") or result.endswith("!") or result.endswith("?") or len(result.split()) <= 30
+        assert result.endswith(".") or result.endswith("!") or result.endswith("?") or len(result.split()) <= 50
     
     def test_empty_text(self) -> None:
         """Test empty text handling."""
-        result = truncate_to_words("", max_words=30)
+        result = truncate_to_words("", max_words=50)
         assert result == ""
     
     def test_exact_word_count(self) -> None:
         """Test text with exact word count."""
-        words = ["слово"] * 30
+        words = ["слово"] * 50
         text = " ".join(words)
-        result = truncate_to_words(text, max_words=30)
+        result = truncate_to_words(text, max_words=50)
         assert result == text
 
 
 class TestTruncateToChars:
-    """Tests for character-based truncation."""
+    """Tests for character-based truncation (safety limit)."""
     
     def test_short_text_unchanged(self) -> None:
         """Test short text is not modified."""
         text = "Короткий ответ"
-        result = truncate_to_chars(text, max_chars=150)
+        result = truncate_to_chars(text, max_chars=450)
         assert result == text
     
     def test_long_text_truncated(self) -> None:
@@ -79,16 +80,44 @@ class TestTruncateToChars:
     
     def test_empty_text(self) -> None:
         """Test empty text handling."""
-        result = truncate_to_chars("", max_chars=150)
+        result = truncate_to_chars("", max_chars=450)
         assert result == ""
     
     def test_exact_char_count(self) -> None:
         """Test text with exact char count."""
         text = "Текст ровно сто символов!!!"
-        # Pad to exactly 150 chars
-        text = "Текст ровно сто символов!!!" + " " * (150 - len("Текст ровно сто символов!!!"))
-        result = truncate_to_chars(text, max_chars=150)
-        assert len(result) <= 150
+        # Pad to exactly 450 chars
+        text = "Текст ровно сто символов!!!" + " " * (450 - len("Текст ровно сто символов!!!"))
+        result = truncate_to_chars(text, max_chars=450)
+        assert len(result) <= 450
+
+
+class TestTruncateToSentences:
+    """Tests for sentence-based truncation (primary limit)."""
+    
+    def test_short_text_unchanged(self) -> None:
+        """Test text with few sentences is not modified."""
+        text = "Первое предложение. Второе предложение."
+        result = truncate_to_sentences(text, max_sentences=3)
+        assert result == text
+    
+    def test_long_text_truncated(self) -> None:
+        """Test text with many sentences is truncated."""
+        text = "Предложение один. Предложение два. Предложение три. Предложение четыре. Предложение пять."
+        result = truncate_to_sentences(text, max_sentences=3)
+        # Should have exactly 3 sentences
+        assert result.count(".") == 3
+    
+    def test_empty_text(self) -> None:
+        """Test empty text handling."""
+        result = truncate_to_sentences("", max_sentences=3)
+        assert result == ""
+    
+    def test_single_sentence(self) -> None:
+        """Test single sentence unchanged."""
+        text = "Одно предложение."
+        result = truncate_to_sentences(text, max_sentences=3)
+        assert result == text
 
 
 class TestNormalizeText:
@@ -189,13 +218,14 @@ class TestExtractAnswerFromContext:
         result = extract_answer_from_context("счёта", context, config)
         assert "счёта" in result.lower() or "счет" in result.lower()
     
-    def test_char_truncation_applied(self) -> None:
-        """Test that character truncation is applied to extracted answer."""
+    def test_sentence_truncation_applied(self) -> None:
+        """Test that sentence truncation is applied to extracted answer."""
         # Create a context that would produce a long answer
-        context = " ".join(["Номер счёта в личном кабинете. Зайдите в раздел. "] * 10)
+        context = "Номер счёта в личном кабинете. Доступно в приложении. Зайдите в раздел. Подробнее на сайте."
         result = extract_answer_from_context("счёта", context)
-        # Answer should be truncated to MAX_RESPONSE_CHARS (150)
-        assert len(result) <= 150
+        # Answer should be truncated to MAX_SENTENCES (3)
+        sentence_count = result.count(".") + result.count("!") + result.count("?")
+        assert sentence_count <= 3
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import razdel
 from openai import OpenAI
 from tqdm import tqdm
 
@@ -23,9 +24,11 @@ from config import (
     QUESTIONS_CSV,
     SUBMISSION_CSV,
     WEBSITES_CSV,
+    MAX_SENTENCES,
     MAX_RESPONSE_WORDS,
     MAX_RESPONSE_CHARS,
     TEMPERATURE,
+    LLM_TIMEOUT,
 )
 from chunker import chunk_all_websites
 from generator import extract_answer_from_context
@@ -57,9 +60,13 @@ OPENROUTER_MODELS = {
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # System prompt
-SYSTEM_PROMPT = """Ты - полезный ассистент. Отвечай максимально кратко: 1-2 предложения, без воды и лишних объяснений.
-Не используй вводные фразы вроде "Вот что я нашел" или "На основе информации".
-Сразу переходи к сути. Если информации недостаточно - скажи "Недостаточно информации".
+SYSTEM_PROMPT = """Ты суровый банковский AI-аналитик. Отвечай на вопрос строго на основе предоставленного текста.
+
+ПРАВИЛА:
+1. Выдавай ТОЛЬКО факты из контекста. Никаких приветствий и лишних слов.
+2. Если в контексте нет прямого ответа на вопрос, верни ровно два слова: "Недостаточно информации".
+3. Отвечай максимально емко. Объединяй длинные списки в одно-два предложения через запятую.
+4. Твой ответ не должен превышать 3 предложений.
 """.strip()
 
 
@@ -67,8 +74,7 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     """
     Truncate text to maximum character count.
     
-    This is the PRIMARY truncation for BERT-Recall-L compliance.
-    Cuts at the last complete sentence boundary before the limit.
+    This is a SAFETY limit to prevent 3x length penalty.
     
     Args:
         text: Input text
@@ -80,22 +86,39 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     
-    # Try to find last sentence end before the limit
     truncated = text[:max_chars]
     
-    # Find the last sentence-ending punctuation
     for punct in [".", "!", "?", "»"]:
         last_punct = truncated.rfind(punct)
-        if last_punct > max_chars * 0.3:  # At least 30% of the limit
+        if last_punct > max_chars * 0.3:
             return truncated[:last_punct + 1]
     
-    # If no good sentence boundary, find last space
     last_space = truncated.rfind(" ")
-    if last_space > max_chars * 0.5:  # At least half the limit
+    if last_space > max_chars * 0.5:
         return truncated[:last_space]
     
-    # Hard cut as last resort
     return truncated
+
+
+def truncate_to_sentences(text: str, max_sentences: int) -> str:
+    """
+    Truncate text to maximum number of sentences.
+    
+    This is the PRIMARY truncation for BERT-Recall-L compliance.
+    
+    Args:
+        text: Input text
+        max_sentences: Maximum number of sentences
+        
+    Returns:
+        Truncated text
+    """
+    sentences = [s.text.strip() for s in razdel.sentenize(text) if s.text.strip()]
+    
+    if len(sentences) <= max_sentences:
+        return text
+    
+    return " ".join(sentences[:max_sentences])
 
 
 class OpenRouterGenerator:
@@ -127,6 +150,7 @@ class OpenRouterGenerator:
         self.client = OpenAI(
             base_url=OPENROUTER_BASE_URL,
             api_key=self.api_key,
+            timeout=LLM_TIMEOUT,
         )
         logger.info(f"OpenRouter client initialized for model: {model}")
 
@@ -139,7 +163,7 @@ class OpenRouterGenerator:
             context: Retrieved context
 
         Returns:
-            Generated answer (truncated to max words and chars)
+            Generated answer (truncated to max sentences and chars)
         """
         if not context:
             return "Недостаточно информации"
@@ -156,12 +180,13 @@ class OpenRouterGenerator:
                 ],
                 temperature=TEMPERATURE,
                 max_tokens=256,
+                timeout=LLM_TIMEOUT,
             )
 
             answer = response.choices[0].message.content or ""
             
-            # Post-process: truncate to max words first, then chars
-            answer = self._truncate_to_words(answer, MAX_RESPONSE_WORDS)
+            # Post-process: truncate to max sentences first, then chars
+            answer = truncate_to_sentences(answer, MAX_SENTENCES)
             answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
 
             return answer.strip()
@@ -169,21 +194,6 @@ class OpenRouterGenerator:
         except Exception as e:
             logger.error("OpenRouter API failed, using fallback: %s", e)
             return extract_answer_from_context(query, context)
-
-    def _truncate_to_words(self, text: str, max_words: int) -> str:
-        """Truncate to max words."""
-        words = text.split()
-        if len(words) <= max_words:
-            return text
-
-        truncated = " ".join(words[:max_words])
-
-        for punct in [".", "!", "?"]:
-            last_punct = truncated.rfind(punct)
-            if last_punct > len(truncated) * 0.5:
-                return truncated[:last_punct + 1]
-
-        return truncated
 
 
 # ─────────────────────────────────────────────
@@ -351,7 +361,7 @@ def run_pipeline(
             answer = generator.generate(query, context)
         except Exception as e:
             logger.error("Failed q_id=%s: %s", q_id, e)
-            answer = ""
+            answer = "Недостаточно информации"
             stats["failed"] += 1
 
         # Валидация
