@@ -103,4 +103,11 @@ Pipeline saves checkpoints every 2000 answers:
 - `data/submission_checkpoint_4000.csv`
 - `data/submission_checkpoint_6000.csv`
 
-This protects against kernel restarts in Kaggle.
+**Auto-resume:** Pipeline automatically resumes from the last checkpoint on restart.
+
+## Memory Optimization
+
+For Kaggle 2x T4 (16GB total VRAM):
+- Batch size reduced to 8 for embedding generation
+- GPU cache cleared after each batch
+- Index auto-saved after build to prevent data loss
