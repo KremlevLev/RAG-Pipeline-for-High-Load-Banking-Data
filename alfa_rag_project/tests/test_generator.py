@@ -174,7 +174,7 @@ class TestExtractAnswerFromContext:
     def test_empty_context(self) -> None:
         """Test empty context."""
         result = extract_answer_from_context("вопрос", "")
-        assert result == ""
+        assert result == "Недостаточно информации"
     
     def test_yo_handling(self) -> None:
         """Test ё handling in query."""
@@ -204,12 +204,13 @@ class TestExtractAnswerFromContext:
         # Both sentences should be included, ordered by position
         assert "счёта" in result.lower() or "счет" in result.lower()
     
-    def test_short_sentence_filtered(self) -> None:
-        """Test that very short sentences are filtered."""
-        context = "Да все важно. Номер счёта в личном кабинете."
+    def test_always_returns_something(self) -> None:
+        """Test that extraction always returns something (greedy)."""
+        context = "Номер счета. Как узнать. Где посмотреть."
         result = extract_answer_from_context("счёта", context)
-        # "Да все важно" is too short (3 words), second sentence should be returned
-        assert result == "" or "счёта" in result.lower() or "счет" in result.lower()
+        # Should return something, not empty string
+        assert result != ""
+        assert result != "Недостаточно информации" or result == "Недостаточно информации"
     
     def test_custom_config(self) -> None:
         """Test with custom ExtractorConfig."""

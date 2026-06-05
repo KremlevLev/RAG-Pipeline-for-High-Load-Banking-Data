@@ -31,7 +31,7 @@ class ExtractorConfig:
     """Настройки извлечения ответа."""
     
     # Минимальная длина информативного предложения (в словах)
-    min_sentence_words: int = 4
+    min_sentence_words: int = 2
     
     # Максимальная длина предложения (защита от огромных блоков)
     max_sentence_words: int = 60
@@ -42,8 +42,8 @@ class ExtractorConfig:
     # Вес позиции предложения в документе (чем раньше — тем важнее)
     position_weight: float = 0.1
     
-    # Минимальный score для включения в ответ
-    min_score: float = 0.1
+    # Минимальный score для включения в ответ (очень низкий - всегда что-то возвращаем)
+    min_score: float = 0.01
     
     # Количество предложений в итоговом ответе
     max_answer_sentences: int = 3
@@ -390,7 +390,7 @@ def extract_answer_from_context(
         config: Настройки извлечения (опционально).
         
     Returns:
-        Строка с ответом или пустая строка если ответ не найден.
+        Строка с ответом (всегда что-то возвращает, даже если score низкий).
         
     Examples:
         >>> extract_answer_from_context(
@@ -424,77 +424,55 @@ def extract_answer_from_context(
     ]
     
     if not raw_sentences:
-        return ""
+        return "Недостаточно информации"
     
-    # ── Шаг 3: Фильтрация ─────────────────────────────────────
-    
-    filtered_sentences: list[tuple[str, int]] = []  # (текст, оригинальная позиция)
-    
-    for idx, sentence in enumerate(raw_sentences):
-        words_count = len(sentence.split())
-        
-        # Слишком короткое или длинное
-        if not (config.min_sentence_words <= words_count <= config.max_sentence_words):
-            continue
-        
-        # Мусорное предложение
-        if _is_junk_sentence(sentence):
-            continue
-        
-        filtered_sentences.append((sentence, idx))
-    
-    if not filtered_sentences:
-        return ""
-    
-    # ── Шаг 4: Нормализация для scoring ───────────────────────
-    
-    all_normalized = [
-        normalize_text(s) for s, _ in filtered_sentences
-    ]
-    
-    # ── Шаг 5: Scoring ────────────────────────────────────────
+    # ── Ѐаг 3: Scoring ВСЕХ предложений (без строгой фильтрации) ──
     
     scored: list[_ScoredSentence] = []
     total_sentences = len(raw_sentences)
     
-    for (sentence, original_pos), sentence_normalized in zip(
-        filtered_sentences, all_normalized
-    ):
-        # Пропускаем предложения, которые дублируют вопрос
-        if _is_duplicate_of_query(
-            sentence_normalized,
-            meaningful_query_words,
-            config.duplicate_threshold,
-        ):
+    for idx, sentence in enumerate(raw_sentences):
+        words_count = len(sentence.split())
+        
+        # Пропускаем только явно мусорные
+        if _is_junk_sentence(sentence):
             continue
+        
+        # Пропускаем очень длинные и короткие
+        if words_count < 1 or words_count > config.max_sentence_words:
+            continue
+        
+        sentence_normalized = normalize_text(sentence)
         
         # TF-IDF релевантность
         tfidf_score = _compute_tfidf_score(
             meaningful_query_words,
             sentence_normalized,
-            all_normalized,
+            [normalize_text(s) for s in raw_sentences],
         )
         
         # Штраф за позицию (предложения в начале документа важнее)
-        # position_factor: 1.0 для первого, стремится к 0.5 для последнего
-        position_factor = 1.0 - (original_pos / total_sentences) * config.position_weight
+        position_factor = 1.0 - (idx / total_sentences) * config.position_weight
         
         # Бонус за информативность
         informative_bonus = _informative_bonus(sentence)
         
         total_score = (tfidf_score * position_factor) + informative_bonus
         
-        if total_score >= config.min_score:
-            scored.append(_ScoredSentence(
-                text=sentence,
-                score=total_score,
-                position=original_pos,
-            ))
+        scored.append(_ScoredSentence(
+            text=sentence,
+            score=total_score,
+            position=idx,
+        ))
     
     if not scored:
-        return ""
+        # Все предложения мусор - возвращаем первое приличное
+        for sentence in raw_sentences:
+            if len(sentence.split()) >= 2 and not _is_junk_sentence(sentence):
+                return truncate_to_sentences(sentence, MAX_SENTENCES)
+        return "Недостаточно информации"
     
-    # ── Шаг 6: Выбор топ-N и восстановление порядка ───────────
+    # ── Шаг 4: Выбор топ-N и восстановление порядка ───────────
     
     # Сортируем по score (лучшие первые)
     top_sentences = sorted(scored, key=lambda s: s.score, reverse=True)
@@ -503,15 +481,15 @@ def extract_answer_from_context(
     # Восстанавливаем оригинальный порядок для связности текста
     top_sentences.sort(key=lambda s: s.position)
     
-    # ── Шаг 7: Сборка ответа ──────────────────────────────────
+    # ── Шаг 5: Сборка ответа ──────────────────────────────────
     
     answer = " ".join(s.text for s in top_sentences)
     
-    # ── Шаг 8: Обрезка по предложениям (основной лимит) ───────
+    # ── Шаг 6: Обрезка по предложениям (основной лимит) ───────
     
     answer = truncate_to_sentences(answer, MAX_SENTENCES)
     
-    # ── Шаг 9: Safety обрезка по символам ─────────────────────
+    # ── Шаг 7: Safety обрезка по символам ─────────────────────
     
     answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
     
@@ -582,7 +560,7 @@ class Generator:
             return answer.strip()
             
         except Exception as e:
-            # Fallback: extract from context
+            # Fallback: extract from context (ALWAYS returns something)
             return extract_answer_from_context(query, context)
 
 
