@@ -177,6 +177,26 @@ This file acts as a local memory bank for project-specific patterns, conventions
 
 ---
 
+## 2026-06-05 - Fixed extraction to be greedy (score 0.23 issue)
+
+### Patterns Discovered
+- Sentence-based truncation (`truncate_to_sentences`) is PRIMARY limit, not character-based
+- Greedy extraction: always return something from context, never empty string
+- Lowered `min_sentence_words` from 4 to 2 to allow shorter informative sentences
+- Lowered `min_score` from 0.1 to 0.01 to include more candidates
+
+### Conventions
+- `extract_answer_from_context` scores ALL sentences, not just filtered ones
+- Fallback returns first non-junk sentence if no scored candidates
+- MAX_RESPONSE_CHARS=450 (not 150) allows 3x reference length without penalty
+
+### Gotchas
+- "Недостаточно информации" gives 0 points - extraction must return context content
+- Short sentences (2-3 words) can be informative in banking context
+- Need to balance between precision and recall in extraction
+
+---
+
 ## Usage
 
 At the end of every successful task, record:
