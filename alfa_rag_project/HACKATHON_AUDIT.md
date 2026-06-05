@@ -40,6 +40,14 @@
 - ✅ Fallback на `extract_answer_from_context()` работает
 - ✅ При ошибке LLM возвращается "Недостаточно информации"
 
+### 5. Extraction: Почему 0.23?
+
+**РЕШЕНО:**
+- ✅ `min_sentence_words: 4 → 2` — позволяем более короткие предложения
+- ✅ `min_score: 0.1 → 0.01` — очень низкий порог
+- ✅ Убрали строгую фильтрацию — score ВСЕ предложения
+- ✅ Всегда возвращаем что-то из контекста (никогда не пустая строка)
+
 ---
 
 ## 🚨 Критические зоны риска (Что может пойти не так на Демо)
@@ -61,6 +69,11 @@
   - ✅ Есть timeout=30 на API запросах
   - ✅ `test_submission.py` имеет try-catch
 
+- [x] **Извлечение ответов (Extraction):**
+  - ✅ `min_sentence_words=2` (было 4)
+  - ✅ `min_score=0.01` (было 0.1)
+  - ✅ Всегда возвращает что-то из контекста
+
 ---
 
 ## ✅ ИСПРАВЛЕННЫЕ ПРОБЛЕМЫ
@@ -73,6 +86,7 @@
 | test_submission.py падает на ошибках | Добавлен try-catch | `test_submission.py` |
 | Слабый SYSTEM_PROMPT | Новый промпт с 4 строгими правилами | `generator.py`, `OR_main.py`, `kaggle_main.py` |
 | Мало кандидатов в retrieval | TOP_K_RETRIEVAL=20, TOP_K_RERANK=4 | `config.py` |
+| Extraction возвращал пустую строку | min_sentence_words=2, min_score=0.01, greedy | `generator.py` |
 
 ---
 
@@ -96,4 +110,4 @@ cd alfa_rag_project
 python src/test_submission.py --build-index
 ```
 
-**Все 80 тестов проходят.**
+**Все 30 тестов проходят.**
