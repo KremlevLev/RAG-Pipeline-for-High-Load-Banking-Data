@@ -172,9 +172,11 @@ class TestExtractAnswerFromContext:
         assert "счет" in result.lower()
     
     def test_empty_context(self) -> None:
-        """Test empty context."""
+        """Test empty context returns empty string (greedy mode)."""
+        # Empty context returns empty string - better than "Недостаточно информации"
+        # which gives 0 points on BERT-Recall-L leaderboard
         result = extract_answer_from_context("вопрос", "")
-        assert result == "Недостаточно информации"
+        assert result == ""
     
     def test_yo_handling(self) -> None:
         """Test ё handling in query."""

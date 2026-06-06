@@ -38,7 +38,7 @@
 - ✅ `timeout=30` добавлен во всех клиентах (OpenAI, OpenRouter)
 - ✅ `try-catch` добавлен в `test_submission.py`
 - ✅ Fallback на `extract_answer_from_context()` работает
-- ✅ При ошибке LLM возвращается "Недостаточно информации"
+- ⚠️ Fixed: При ошибке LLM теперь использует fallback extraction вместо "Недостаточно информации"
 
 ### 5. Extraction: Почему 0.23?
 

@@ -208,3 +208,67 @@ At the end of every successful task, record:
 - Security considerations specific to this project
 - Testing patterns that work well
 - Dependency management practices
+## 2026-06-06 - Code Review: Low Score (0.22) Root Cause Analysis
+
+### Patterns Discovered
+- SYSTEM_PROMPT explicitly told LLM to return "Недостаточно информации" - this kills BERT-Recall-L score
+- All generators (OR_main, kaggle_main, main) returned "Недостаточно информации" on errors instead of fallback extraction
+- `extract_answer_from_context` had multiple return paths for "Недостаточно информации" instead of greedy mode
+
+### Conventions
+- Changed SYSTEM_PROMPT: "Если в контексте нет прямого ответа, выбери самое релевантное предложение из контекста"
+- All generators now use `extract_answer_from_context` as fallback instead of "Недостаточно информации"
+- `extract_answer_from_context` is now greedy: always returns first sentence if no scored candidates
+
+### Gotchas
+- "Недостаточно информации" gives 0 points on leaderboard - extraction must return context content
+- Empty context in generator should still call fallback to get something from retriever
+- Need to handle edge case: `if not scored` with empty `raw_sentences` - added safety check
+
+### Code Review Findings
+
+#### main.py
+- ✅ Good: AnswerCache with persistent JSON cache
+- ✅ Good: validate_answer with word overlap check
+- ⚠️ Fixed: Exception handler now uses `extract_answer_from_context(query, retriever.get_context(query))` instead of empty string
+
+#### OR_main.py
+- ✅ Good: OpenRouter API integration with timeout
+- ⚠️ Fixed: `generate()` now uses fallback for empty context
+- ⚠️ Fixed: Exception handler now uses `extract_answer_from_context` instead of "Недостаточно информации"
+
+#### kaggle_main.py
+- ✅ Good: Multi-GPU support for 2x T4
+- ⚠️ Fixed: `generate()` now uses fallback for empty context
+- ⚠️ Fixed: Exception handler now uses `extract_answer_from_context` instead of "Недостаточно информации"
+
+#### generator.py
+- ⚠️ Fixed: SYSTEM_PROMPT no longer explicitly requests "Недостаточно информации"
+- ⚠️ Fixed: `extract_answer_from_context` is now greedy - always returns something
+- ⚠️ Fixed: `Generator.generate()` uses fallback for empty context
+
+---
+
+## 2026-06-06 - Implemented 5 Architectural Improvements
+
+### Patterns Discovered
+- Hybrid search (BM25 + FAISS) increases recall by combining semantic and lexical search
+- "Lost in the Middle" fix: reversing chunk order ensures relevant info appears at both start and end
+- Few-shot prompting improves answer quality and consistency
+- MAX_RESPONSE_CHARS=450 allows 3x reference length without penalty
+- TOP_K_RERANK=10 provides more candidates for cross-encoder reranking
+
+### Conventions
+- `TOP_K_BM25` config constant for BM25 retrieval size (15)
+- `_tokenize_for_bm25()` helper for Russian text tokenization
+- `_bm25_search()` method in Retriever for lexical search
+- `retrieve()` now merges FAISS and BM25 candidates before reranking
+- `get_context()` reverses chunk order to combat "Lost in the Middle"
+- SYSTEM_PROMPT includes 3 few-shot examples for better instruction following
+
+### Gotchas
+- BM25 requires rank_bm25 package: `pip install rank-bm25`
+- BM25 tokenization must handle Russian characters (а-яё)
+- Reversing chunks may affect context coherence - but improves LLM attention
+- Few-shot examples should be in Russian to match model training
+- Need to ensure TOP_K_RERANK >= 4 to get enough candidates after merge

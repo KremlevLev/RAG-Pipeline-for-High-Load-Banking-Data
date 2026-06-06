@@ -51,9 +51,9 @@ This document provides a comprehensive code review of the RAG pipeline project. 
 
 ## Medium Priority Issues
 
-### 7. Inconsistent Return Types
+### 7. ~~Inconsistent Return Types~~ - FIXED
 - **File**: `alfa_rag_project/src/generator.py:480`
-- **Issue**: `generate()` returns "Недостаточно информации" for empty context, but `extract_answer_from_context()` returns empty string
+- **Issue**: ~~`generate()` returns "Недостаточно информации" for empty context~~ - FIXED: now uses fallback extraction
 - **Impact**: Inconsistent API behavior
 - **Recommendation**: Standardize on one approach (empty string or default message)
 
@@ -124,6 +124,7 @@ This document provides a comprehensive code review of the RAG pipeline project. 
 ## Security Checklist
 
 - [x] No hardcoded passwords in source code
+- [x] Fixed: "Недостаточно информации" removed from all code paths - now uses greedy fallback extraction
 - [x] API key is hardcoded (see issue #3)
 - [x] No SQL injection vectors (no SQL used)
 - [x] No path traversal vulnerabilities

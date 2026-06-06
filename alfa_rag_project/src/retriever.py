@@ -1,18 +1,19 @@
 """
 Retrieval module for RAG pipeline.
-Performs vector search, cross-encoder reranking, and context formatting.
+Performs hybrid search (BM25 + FAISS), cross-encoder reranking, and context formatting.
 """
 
 import re
 import html
 import logging
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set
 
 import numpy as np
 from sentence_transformers import CrossEncoder
+from rank_bm25 import BM25Okapi
 
-from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL
+from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL, TOP_K_BM25
 from indexer import Indexer
 
 logger = logging.getLogger(__name__)
@@ -230,12 +231,33 @@ def clean_chunk_text(
 
 
 # ─────────────────────────────────────────────
+# BM25 Tokenize
+# ─────────────────────────────────────────────
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """
+    Tokenize text for BM25 search.
+    
+    Simple whitespace + punctuation tokenization for Russian text.
+    
+    Args:
+        text: Input text to tokenize.
+        
+    Returns:
+        List of tokens.
+    """
+    # Simple tokenization: split on whitespace and remove punctuation
+    text = re.sub(r"[^\w\sа-яёa-z]", " ", text.lower(), flags=re.UNICODE)
+    return [t for t in text.split() if t and len(t) > 1]
+
+
+# ─────────────────────────────────────────────
 # Retriever
 # ─────────────────────────────────────────────
 
 class Retriever:
     """
-    Handles retrieval with FAISS and reranking.
+    Handles hybrid retrieval with FAISS and BM25, plus cross-encoder reranking.
     """
     
     def __init__(
@@ -245,7 +267,7 @@ class Retriever:
         cleaner_config: Optional[CleanerConfig] = None,
     ):
         """
-        Initialize retriever with indexer and reranker.
+        Initialize retriever with indexer, reranker, and BM25 index.
         
         Args:
             indexer: Indexer instance with loaded FAISS index.
@@ -255,10 +277,72 @@ class Retriever:
         self.indexer = indexer
         self.reranker = CrossEncoder(reranker_model)
         self.cleaner_config = cleaner_config or CleanerConfig()
+        
+        # Build BM25 index from all chunk texts
+        self._bm25_index: Optional[BM25Okapi] = None
+        self._bm25_texts: list[str] = []
+        self._bm25_ids: list[int] = []
+        self._build_bm25_index()
+    
+    def _build_bm25_index(self) -> None:
+        """Build BM25 index from all chunks in the indexer."""
+        if not self.indexer.is_built():
+            return
+        
+        all_texts = self.indexer.get_all_texts()
+        self._bm25_texts = all_texts
+        self._bm25_ids = list(range(len(all_texts)))
+        
+        # Tokenize all texts for BM25
+        tokenized_texts = [_tokenize_for_bm25(text) for text in all_texts]
+        self._bm25_index = BM25Okapi(tokenized_texts)
+        
+        logger.info(
+            "BM25 index built: %d documents",
+            len(all_texts),
+        )
+    
+    def _bm25_search(self, query: str) -> List[Tuple[int, str, float]]:
+        """
+        Search using BM25 lexical index.
+        
+        Args:
+            query: Search query.
+            
+        Returns:
+            List of (chunk_id, text, score) tuples from BM25.
+        """
+        if self._bm25_index is None:
+            return []
+        
+        tokenized_query = _tokenize_for_bm25(query)
+        if not tokenized_query:
+            return []
+        
+        bm25_scores = self._bm25_index.get_scores(tokenized_query)
+        
+        # Get top-k indices
+        top_indices = np.argsort(bm25_scores)[::-1][:TOP_K_BM25]
+        
+        results = []
+        for idx in top_indices:
+            if bm25_scores[idx] > 0:
+                chunk_id = self._bm25_ids[idx]
+                chunk_data = self.indexer.get_chunk_by_id(chunk_id)
+                if chunk_data is not None:
+                    results.append((chunk_id, chunk_data["text"], float(bm25_scores[idx])))
+        
+        return results
     
     def retrieve(self, query: str) -> List[Tuple[int, str, float]]:
         """
-        Retrieve top-k chunks for a query.
+        Retrieve top-k chunks for a query using hybrid search.
+        
+        Two-stage retrieval pipeline:
+            1. Get Top-15 chunks from FAISS (semantic search)
+            2. Get Top-15 chunks from BM25 (exact keyword match)
+            3. Merge and deduplicate (resulting in ~20-25 unique chunks)
+            4. Pass to cross-encoder for reranking
         
         Args:
             query: Search query.
@@ -273,6 +357,7 @@ class Retriever:
         if not self.indexer.is_built():
             raise RuntimeError("Indexer not built or loaded")
         
+        # ── Stage 1: FAISS semantic search ───────────────────────────────
         query_embedding = self.indexer.model.encode(
             [query],
             normalize_embeddings=True,
@@ -284,26 +369,44 @@ class Retriever:
             TOP_K_RETRIEVAL,
         )
         
-        candidate_ids = indices[0].tolist()
-        candidates: List[Tuple[int, str]] = []
-        
-        for cid in candidate_ids:
+        faiss_candidates: List[Tuple[int, str]] = []
+        for cid in indices[0].tolist():
             chunk_data = self.indexer.get_chunk_by_id(cid)
             if chunk_data is not None:
-                candidates.append((cid, chunk_data["text"]))
+                faiss_candidates.append((cid, chunk_data["text"]))
         
-        if not candidates:
+        # ── Stage 2: BM25 lexical search ───────────────────────────────
+        bm25_candidates = self._bm25_search(query)
+        
+        # ── Stage 3: Merge and deduplicate ───────────────────────────────
+        seen_ids: Set[int] = set()
+        merged_candidates: List[Tuple[int, str]] = []
+        
+        # Add FAISS candidates first
+        for chunk_id, text in faiss_candidates:
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                merged_candidates.append((chunk_id, text))
+        
+        # Add BM25 candidates (deduplicated)
+        for chunk_id, text, _ in bm25_candidates:
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                merged_candidates.append((chunk_id, text))
+        
+        if not merged_candidates:
             return []
         
+        # ── Stage 4: Cross-encoder reranking ───────────────────────────────
         rerank_scores = self.reranker.predict(
-            [(query, text) for _, text in candidates]
+            [(query, text) for _, text in merged_candidates]
         )
         
         top_indices = np.argsort(rerank_scores)[::-1][:TOP_K_RERANK]
         
         results = []
         for idx in top_indices:
-            chunk_id, text = candidates[idx]
+            chunk_id, text = merged_candidates[idx]
             score = float(rerank_scores[idx])
             results.append((chunk_id, text, score))
         
@@ -322,6 +425,13 @@ class Retriever:
             - Каждый чанк проходит clean_chunk_text()
             - Пустые чанки после очистки пропускаются
             - Разделитель между чанками — чистый \\n\\n
+            - Чанки реверсированы (Lost in the Middle fix)
+        
+        "Lost in the Middle" fix:
+            LLMs tend to focus on the beginning and end of context,
+            missing important information in the middle. By reversing
+            the order of chunks, we ensure the most relevant chunks
+            (from reranking) appear at both start and end.
         
         Args:
             query: Search query.
@@ -351,6 +461,10 @@ class Retriever:
                 continue
             
             context_parts.append(cleaned)
+        
+        # "Lost in the Middle" fix: reverse the order of chunks
+        # This ensures the most relevant chunks appear at both start and end
+        context_parts = context_parts[::-1]
         
         return "\n\n".join(context_parts)
 

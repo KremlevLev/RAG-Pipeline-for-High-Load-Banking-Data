@@ -21,7 +21,7 @@ from config import (
     WEBSITES_CSV,
 )
 from chunker import chunk_all_websites
-from generator import create_generator
+from generator import create_generator, extract_answer_from_context
 from indexer import build_and_save_index, load_index
 from retriever import create_retriever
 
@@ -303,7 +303,7 @@ def run_pipeline(
         except Exception as e:
             # Один сломанный вопрос не роняет весь pipeline
             logger.error("Failed to process q_id=%s: %s", q_id, e, exc_info=True)
-            answer = ""
+            answer = extract_answer_from_context(query, retriever.get_context(query))
             stats["failed"] += 1
 
         # Шаг 3: Валидация
