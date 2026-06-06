@@ -37,9 +37,9 @@ TOP_K_BM25: Final[int] = 15  # Number of candidates from BM25
 TOP_K_RERANK: Final[int] = 10  # Number of final results after reranking
 
 # Generation parameters - optimized for BERT-Recall-L
-MAX_SENTENCES: Final[int] = 3  # Maximum sentences in answer (primary limit)
-MAX_RESPONSE_WORDS: Final[int] = 50  # Soft word limit for density
-MAX_RESPONSE_CHARS: Final[int] = 450  # Hard safety limit (3x reference length)
+MAX_SENTENCES: Final[int] = 2  # Maximum sentences in answer (primary limit)
+MAX_RESPONSE_WORDS: Final[int] = 30  # Soft word limit for density
+MAX_RESPONSE_CHARS: Final[int] = 150  # Hard safety limit (3x reference length)
 TEMPERATURE: Final[float] = 0.1  # Low temperature for deterministic output
 
 # API timeout
