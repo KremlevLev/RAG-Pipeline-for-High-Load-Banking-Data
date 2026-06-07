@@ -44,16 +44,11 @@ python main.py --build-index --model qwen2.5:7b
 ### Kaggle (kaggle_main.py) - Open-source models with 2x T4 GPU
 ```bash
 cd alfa_rag_project/src
-python -m main --build-index --model qwen2.5-7b
-```
-
-Or directly:
-```bash
 python kaggle_main.py --build-index --model qwen2.5-7b
 ```
 
 ### Available Kaggle models
-- `qwen2.5-7b` - Qwen/Qwen2.5-7B-Instruct
+- `qwen2.5-7b` - Qwen/Qwen2.5-7B-Instruct (recommended for Russian)
 - `qwen2-7b` - Qwen/Qwen2-7B-Instruct
 - `mistral-7b` - Mistral-7B-Instruct-v0.3
 - `llama3-8b` - Meta-Llama-3-8B-Instruct
@@ -69,29 +64,59 @@ python OR_main.py --model qwen2.5-7b
 
 No model downloads - uses OpenRouter API for open-source models.
 
+## Architecture
+
+### Pipeline Flow
+
+```
+questions.csv → Retriever → Generator → submission.csv
+                    ↓
+              FAISS + BM25 + Reranker
+```
+
+### Two-Stage Retrieval
+
+1. **FAISS Semantic Search** - BGE-M3 embeddings, finds semantically similar chunks
+2. **BM25 Lexical Search** - Exact keyword matching, finds exact term matches
+3. **Cross-Encoder Reranking** - BGE-reranker-v2-m3 scores and re-ranks merged candidates
+
+### Answer Generation
+
+1. **Context Retrieval** - Top-k chunks cleaned and formatted
+2. **LLM Generation** - Qwen/Qwen2.5-7B-Instruct with few-shot prompting
+3. **Post-processing** - Truncation to 2 sentences + 150 chars (BERT-Recall-L compliance)
+
 ## Key Features
 
 - **Chunking**: Sentence-aware splitting using `razdel.sentenize` (no broken sentences)
 - **Embeddings**: BGE-M3 (1024-dim) with normalized vectors
-- **Reranking**: BGE-reranker-v2-m3 cross-encoder
+- **Reranking**: BGE-reranker-v2-m3 cross-encoder (batched for memory efficiency)
 - **Brevity**: System prompt + post-processing to limit response to ~30 words
 - **FAISS**: Inner Product similarity for cosine with normalized vectors
 - **Kaggle Support**: Hugging Face models with automatic 2x T4 GPU detection
+- **Hybrid Search**: Combines semantic (FAISS) and lexical (BM25) search
+- **Lost in the Middle Fix**: Reverses chunk order to improve LLM attention
 
 ## Configuration
 
 Key parameters in `config.py`:
-- `CHUNK_SIZE=400` - Target chunk size in characters
-- `CHUNK_OVERLAP=50` - Overlap between chunks
-- `TOP_K_RETRIEVAL=15` - FAISS candidates
-- `TOP_K_RERANK=3` - Final results after reranking
-- `MAX_RESPONSE_WORDS=30` - Hard limit for LLM output
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `CHUNK_SIZE` | 450 | Target chunk size in characters (3-5 sentences) |
+| `CHUNK_OVERLAP` | 100 | Overlap between chunks in characters |
+| `TOP_K_RETRIEVAL` | 10 | FAISS candidates |
+| `TOP_K_BM25` | 10 | BM25 candidates |
+| `TOP_K_RERANK` | 5 | Final results after reranking |
+| `RERANKER_BATCH_SIZE` | 10 | Batch size for memory efficiency |
+| `MAX_SENTENCES` | 2 | Maximum sentences in answer |
+| `MAX_RESPONSE_CHARS` | 150 | Hard safety limit (3x reference length) |
 
 ## Kaggle Deployment
 
 1. Clone repository in Kaggle notebook
 2. Install dependencies: `!pip install -r requirements.txt`
-3. Run: `python -m main --build-index --model qwen2.5-7b`
+3. Run: `python kaggle_main.py --build-index --model qwen2.5-7b`
 4. Results saved to `data/submission.csv`
 
 **Note**: First run will download models (~1-2GB). Use pre-built index if available.
@@ -107,7 +132,41 @@ Pipeline saves checkpoints every 2000 answers:
 
 ## Memory Optimization
 
-For Kaggle 2x T4 (16GB total VRAM):
-- Batch size reduced to 8 for embedding generation
-- GPU cache cleared after each batch
-- Index auto-saved after build to prevent data loss
+For Kaggle 2x T4 (14.56 GiB VRAM):
+- `RERANKER_BATCH_SIZE=10` - Process 10 pairs at a time
+- Batched reranking prevents CUDA OOM
+- GPU cache cleared after each batch (optional)
+
+## Module Details
+
+### config.py
+Centralized configuration with all paths, model names, and hyperparameters.
+
+### chunker.py
+- `Chunker` class with configurable parameters
+- `clean_text()` - removes HTML, service phrases, normalizes whitespace
+- `chunk_text()` - sentence-aware splitting with overlap
+
+### indexer.py
+- `build_and_save_index()` - creates FAISS index with BGE-M3 embeddings
+- `load_index()` - loads existing index
+- `normalize_for_embedding()` - ё→е translation, NFC normalization
+- Deduplication via SHA-256 hashing
+
+### retriever.py
+- `Retriever` class with hybrid search
+- `retrieve()` - FAISS + BM25 + reranking pipeline
+- `get_context()` - cleaned context for LLM
+- `clean_chunk_text()` - removes chunk ID, HTML, decorative chars
+
+### generator.py
+- `Generator` class for LLM calls
+- `extract_answer_from_context()` - fallback extraction with TF-IDF scoring
+- `truncate_to_sentences()` - primary truncation (BERT-Recall-L)
+- `truncate_to_chars()` - safety truncation
+
+### main.py / kaggle_main.py / OR_main.py
+- Three entry points for different environments
+- `AnswerCache` - persistent JSON cache
+- `validate_answer()` - word overlap validation
+- Auto-resume from checkpoints
