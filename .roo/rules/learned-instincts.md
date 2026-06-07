@@ -295,12 +295,13 @@ This file acts as a local memory bank for project-specific patterns, conventions
 
 ### Conventions
 - `USE_INT8=True` in kaggle_main.py for int8 quantization
-- `load_in_8bit=True` in model loading for faster inference
+- `BitsAndBytesConfig(load_in_8bit=True)` for proper int8 quantization
 - `TOP_K_RETRIEVAL=5` and `TOP_K_BM25=5` in config.py
 - Expected time: 6-7s → 3-4s per question (under 12 hours total)
 
 ### Gotchas
 - int8 quantization requires bitsandbytes package
+- `load_in_8bit` must be passed via `quantization_config` parameter, not directly
 - May slightly reduce answer quality but acceptable for speed
 - Need to ensure enough candidates after merge (5+5=10, still enough for reranking)
 - Qwen recommended for Russian banking context due to better instruction following
