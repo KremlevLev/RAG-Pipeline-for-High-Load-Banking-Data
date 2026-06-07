@@ -13,8 +13,6 @@ import numpy as np
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
-import torch
-
 from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL, TOP_K_BM25, RERANKER_BATCH_SIZE
 from indexer import Indexer
 
@@ -408,10 +406,6 @@ class Retriever:
             batch = all_pairs[i:i + RERANKER_BATCH_SIZE]
             batch_scores = self.reranker.predict(batch)
             rerank_scores.extend(batch_scores.tolist() if hasattr(batch_scores, 'tolist') else list(batch_scores))
-            
-            # Clear GPU cache after each batch to prevent memory fragmentation
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
         
         top_indices = np.argsort(rerank_scores)[::-1][:TOP_K_RERANK]
         

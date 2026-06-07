@@ -245,7 +245,7 @@ class KaggleGenerator:
             # Генерируем
             outputs = self.pipe(
                 prompt,
-                max_new_tokens=256,
+                max_new_tokens=64,  # Reduced for speed (answers limited to 2 sentences anyway)
                 temperature=TEMPERATURE,
                 do_sample=TEMPERATURE > 0,
                 top_p=0.9 if TEMPERATURE > 0 else None,

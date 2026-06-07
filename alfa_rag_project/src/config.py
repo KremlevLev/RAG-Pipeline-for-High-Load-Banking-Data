@@ -34,7 +34,7 @@ CHUNK_OVERLAP: Final[int] = 100  # Overlap between chunks in characters
 # Retrieval parameters - optimized for speed
 TOP_K_RETRIEVAL: Final[int] = 10  # Number of candidates from FAISS
 TOP_K_BM25: Final[int] = 10  # Number of candidates from BM25
-TOP_K_RERANK: Final[int] = 5  # Number of final results after reranking
+TOP_K_RERANK: Final[int] = 3  # Number of final results after reranking (reduced for speed)
 
 # Reranker batch size for memory efficiency (prevents CUDA OOM)
 RERANKER_BATCH_SIZE: Final[int] = 10  # Process 10 pairs at a time (fits in 14GB GPU)
