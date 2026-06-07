@@ -42,6 +42,10 @@ data/faiss_index.bin
 data/chunk_mapping.json
 data/answer_cache.json
 data/submission_checkpoint_*.csv
+data/submission_test.csv
+data/analysis_first_50.csv
+data/submission (3).csv
+data/submission (4).csv
 
 # Model cache (Hugging Face)
 .cache/huggingface/
@@ -58,3 +62,12 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Misc
+.roorules
+*.lock
+*.pyc
+obsidian_client.py
+test_obsidian_client.py
+analyze_answers.py
+evaluate_metric.py

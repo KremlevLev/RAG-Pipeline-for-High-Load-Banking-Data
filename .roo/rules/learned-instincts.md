@@ -197,17 +197,6 @@ This file acts as a local memory bank for project-specific patterns, conventions
 
 ---
 
-## Usage
-
-At the end of every successful task, record:
-- Project-specific naming conventions
-- Custom file organization patterns
-- Unique architectural decisions
-- Common error patterns and solutions
-- Performance optimizations discovered
-- Security considerations specific to this project
-- Testing patterns that work well
-- Dependency management practices
 ## 2026-06-06 - Code Review: Low Score (0.22) Root Cause Analysis
 
 ### Patterns Discovered
@@ -293,3 +282,25 @@ At the end of every successful task, record:
 - Need to import `torch` in retriever.py for `empty_cache()` call
 - Error handling must avoid re-calling the failing function
 - GPU memory fragmentation is worse than actual usage - clear cache proactively
+
+---
+
+## 2026-06-07 - Performance Optimization for Kaggle 12-Hour Limit
+
+### Patterns Discovered
+- 6-7 seconds per question = ~12+ hours for 6977 questions (exceeds Kaggle limit)
+- LLM generation (Qwen-7B) takes ~4-5s, retrieval takes ~1-2s
+- int8 quantization can reduce LLM inference time by ~30-50%
+- Reducing retrieval candidates (10→5) saves ~0.5s per question
+
+### Conventions
+- `USE_INT8=True` in kaggle_main.py for int8 quantization
+- `load_in_8bit=True` in model loading for faster inference
+- `TOP_K_RETRIEVAL=5` and `TOP_K_BM25=5` in config.py
+- Expected time: 6-7s → 3-4s per question (under 12 hours total)
+
+### Gotchas
+- int8 quantization requires bitsandbytes package
+- May slightly reduce answer quality but acceptable for speed
+- Need to ensure enough candidates after merge (5+5=10, still enough for reranking)
+- Qwen recommended for Russian banking context due to better instruction following

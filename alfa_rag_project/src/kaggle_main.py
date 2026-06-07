@@ -60,6 +60,9 @@ KAGGLE_MODELS = {
     "llama3-8b": "meta-llama/Meta-Llama-3-8B-Instruct",
 }
 
+# Flag for int8 quantization (speeds up inference on T4 GPU)
+USE_INT8: bool = True
+
 # System prompt для русскоязычных моделей с few-shot примерами
 SYSTEM_PROMPT = """Ты суровый банковский AI-аналитик. Отвечай на вопрос строго на основе предоставленного текста.
 
@@ -186,12 +189,22 @@ class KaggleGenerator:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        # Model loading with int8 quantization for speed
+        model_kwargs = {
+            "device_map": device_map,
+            "torch_dtype": torch_dtype,
+            "trust_remote_code": True,
+            "use_cache": True,
+        }
+        
+        # Add int8 quantization for GPU (speeds up inference)
+        if USE_INT8 and num_gpus >= 1:
+            model_kwargs["load_in_8bit"] = True
+            logger.info("Using int8 quantization for faster inference")
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-            use_cache=True,
+            **model_kwargs,
         )
 
         # Создаем pipeline
