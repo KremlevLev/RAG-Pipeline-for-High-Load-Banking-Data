@@ -32,7 +32,7 @@ CHUNK_SIZE: Final[int] = 450  # Target chunk size in characters (3-5 sentences)
 CHUNK_OVERLAP: Final[int] = 100  # Overlap between chunks in characters
 
 # Retrieval parameters - optimized for quality
-TOP_K_RETRIEVAL: Final[int] = 15  # Number of candidates from FAISS
+TOP_K_RETRIEVAL: Final[int] = 20  # Number of candidates from FAISS
 TOP_K_BM25: Final[int] = 15  # Number of candidates from BM25
 TOP_K_RERANK: Final[int] = 10  # Number of final results after reranking
 
