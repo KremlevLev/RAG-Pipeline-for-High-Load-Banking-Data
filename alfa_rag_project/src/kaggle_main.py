@@ -312,6 +312,10 @@ class KaggleGenerator:
             answer = truncate_to_sentences(answer, MAX_SENTENCES)
             answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
 
+            # CUDA OOM mitigation
+            gc.collect()
+            torch.cuda.empty_cache()
+
             return answer
 
         except Exception as e:
@@ -353,7 +357,7 @@ class VLLMGenerator:
             model=model_name,
             dtype="float16",
             trust_remote_code=True,
-            gpu_memory_utilization=0.85,  # оставляем место для reranker'а
+            gpu_memory_utilization=0.55,  # 0.55 — максимум 8GB из 14.56 (было 0.85 — OOM)
             max_model_len=4096,           # достаточно для контекста + ответа
         )
 
@@ -406,6 +410,11 @@ class VLLMGenerator:
             answer = strip_preamble(answer)
             answer = truncate_to_sentences(answer, MAX_SENTENCES)
             answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
+
+            # CUDA OOM mitigation: очистка после каждого вызова
+            gc.collect()
+            torch.cuda.empty_cache()
+
             return answer
 
         except Exception as e:
@@ -451,6 +460,8 @@ class VLLMGenerator:
                 answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
                 results.insert(batch_map[j], answer)
 
+            gc.collect()
+            torch.cuda.empty_cache()
             return results
 
         except Exception as e:

@@ -37,7 +37,7 @@ TOP_K_BM25: Final[int] = 15  # Number of candidates from BM25
 TOP_K_RERANK: Final[int] = 10  # Number of final results after reranking
 
 # Reranker batch size for memory efficiency (prevents CUDA OOM)
-RERANKER_BATCH_SIZE: Final[int] = 15  # Process 15 pairs at a time (Vikhr-1B is smaller, more memory available)
+RERANKER_BATCH_SIZE: Final[int] = 4  # 4 — агрессивно мало для 2xT4 (было 15 — OOM)
 
 # Минимальный score reranker'а для формирования ответа
 # Если лучший чанк набрал score < MIN_RERANK_SCORE, вопрос нерелевантен контексту.

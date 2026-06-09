@@ -225,7 +225,7 @@ class Indexer:
 
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        batch_size = 32  # 32 — оптимально для BGE-M3 на T4 (было 8 — недогруз GPU)
+        batch_size = 4  # 4 — агрессивно мало для CUDA OOM на 2xT4 (было 32 — убивало память)
 
         all_embeddings = []
         # CUDA OOM mitigation: отключаем градиенты (не нужны для инференса)
