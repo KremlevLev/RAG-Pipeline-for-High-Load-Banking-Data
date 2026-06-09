@@ -14,7 +14,7 @@ import torch
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
-from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL, TOP_K_BM25, RERANKER_BATCH_SIZE
+from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL, TOP_K_BM25, RERANKER_BATCH_SIZE, MIN_RERANK_SCORE
 from indexer import Indexer, normalize_for_embedding
 
 logger = logging.getLogger(__name__)
@@ -458,6 +458,17 @@ class Retriever:
         results = self.retrieve(query)
         
         if not results:
+            return ""
+        
+        # 5.3: если лучший чанк ниже порога релевантности — вопрос нерелевантен контексту
+        # Возвращаем пустую строку, чтобы генератор выдал "Нет ответа."
+        best_score = results[0][2]
+        if best_score < MIN_RERANK_SCORE:
+            logger.debug(
+                "Query below relevance threshold (best_score=%.4f < %.2f), returning empty context",
+                best_score,
+                MIN_RERANK_SCORE,
+            )
             return ""
         
         config = cleaner_config or self.cleaner_config

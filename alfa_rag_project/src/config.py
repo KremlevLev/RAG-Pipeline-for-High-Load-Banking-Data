@@ -39,6 +39,11 @@ TOP_K_RERANK: Final[int] = 10  # Number of final results after reranking
 # Reranker batch size for memory efficiency (prevents CUDA OOM)
 RERANKER_BATCH_SIZE: Final[int] = 15  # Process 15 pairs at a time (Vikhr-1B is smaller, more memory available)
 
+# Минимальный score reranker'а для формирования ответа
+# Если лучший чанк набрал score < MIN_RERANK_SCORE, вопрос нерелевантен контексту.
+# Отдаём "Нет ответа." — это совпадает с эталоном (q_id=7,13) и сохраняет BERTScore.
+MIN_RERANK_SCORE: Final[float] = 0.05
+
 # Generation parameters - optimized for BERT-Recall-L
 # Эталоны (sample_submission.csv) имеют медиану ~200-280 символов, max 700+.
 # Порог без штрафа = 1.5 * Lr. Цель: покрыть recall, не уходя в 3x.

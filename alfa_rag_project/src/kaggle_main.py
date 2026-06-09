@@ -261,8 +261,9 @@ class KaggleGenerator:
         Returns:
             Generated answer (truncated to max sentences and chars)
         """
+        # 5.3: пустой контекст = вопрос нерелевантен — "Нет ответа." (совпадает с эталоном)
         if not context:
-            return extract_answer_from_context(query, context)
+            return "Нет ответа."
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -504,6 +505,8 @@ def run_pipeline(
         except Exception as e:
             logger.error("Failed to process q_id=%s: %s", q_id, e, exc_info=True)
             answer = extract_answer_from_context(query, context or "")
+            if not answer:  # если контекст был пустым — "Нет ответа."
+                answer = "Нет ответа."
             stats["failed"] += 1
 
         # Шаг 3: Валидация (FIX-3: теперь она ДЕЙСТВУЕТ — заменяет плохой ответ на fallback)

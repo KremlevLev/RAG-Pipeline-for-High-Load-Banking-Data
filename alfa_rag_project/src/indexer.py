@@ -224,7 +224,7 @@ class Indexer:
 
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        batch_size = 8 if device == "cuda" else 32  # Маленький батч для GPU
+        batch_size = 32  # 32 — оптимально для BGE-M3 на T4 (было 8 — недогруз GPU)
 
         all_embeddings = []
         with tqdm(total=len(texts_for_embedding), desc="Embedding") as pbar:
@@ -239,8 +239,8 @@ class Indexer:
                 )
                 all_embeddings.append(batch_emb)
                 pbar.update(len(batch))
-                # Очистка кэша GPU
-                if device == "cuda":
+                # Очистка кэша GPU раз в 10 батчей (а не каждый — пустая трата времени)
+                if device == "cuda" and (i // batch_size) % 10 == 0:
                     torch.cuda.empty_cache()
 
         embeddings = np.vstack(all_embeddings).astype(np.float32)
