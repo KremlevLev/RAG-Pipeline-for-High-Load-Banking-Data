@@ -35,9 +35,9 @@ class ChunkerConfig:
         keep_sentence_boundary: Не разрывать предложения.
             Чанк всегда заканчивается на границе предложения.
     """
-    chunk_size: int = 450
-    chunk_overlap: int = 100
-    min_chunk_length: int = 30
+    chunk_size: int = 650
+    chunk_overlap: int = 120
+    min_chunk_length: int = 40
     keep_sentence_boundary: bool = True
 
 
@@ -417,20 +417,33 @@ def chunk_website(web_id: int, text: str) -> List[Chunk]:
 
 def chunk_all_websites(websites_data: List[Tuple[int, str]]) -> List[Chunk]:
     """
-    Chunk all websites and assign sequential IDs.
-    
+    Chunk all websites using the OЧИЩАЮЩИЙ Chunker (not legacy create_chunks).
+
+    Each chunk goes through clean_text() pipeline: HTML unescape → tag removal →
+    service phrase removal → whitespace normalization → sentence splitting.
+
     Args:
-        websites_data: List of (web_id, text) tuples
-        
+        websites_data: List of (web_id, text) tuples.
+
     Returns:
-        List of all chunks with unique IDs
+        List of clean Chunk objects with unique sequential IDs.
     """
+    chunker = Chunker(ChunkerConfig(
+        chunk_size=650,        # FIX-C2: цельный FAQ-ответ влезает в один чанк
+        chunk_overlap=120,
+        min_chunk_length=40,
+    ))
     all_chunks: List[Chunk] = []
-    next_chunk_id = 0
-    
+    next_id = 0
+
     for web_id, text in websites_data:
-        chunks = create_chunks(web_id, text, next_chunk_id)
-        all_chunks.extend(chunks)
-        next_chunk_id += len(chunks)
-    
+        for piece in chunker.chunk_text(text):  # clean_text() вызывается внутри
+            all_chunks.append(Chunk(chunk_id=next_id, web_id=web_id, text=piece))
+            next_id += 1
+
+    logger.info(
+        "Chunked %d websites into %d chunks (Chunker with clean_text)",
+        len(websites_data),
+        len(all_chunks),
+    )
     return all_chunks

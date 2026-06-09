@@ -144,21 +144,49 @@ def _is_duplicate_of_query(
     return similarity >= threshold
 
 
+def _precompute_doc_freq(
+    query_words: set[str],
+    all_sentences_normalized: list[str],
+) -> dict[str, float]:
+    """
+    Предрасчитывает IDF для каждого слова запроса (один проход по всем предложениям).
+    
+    Args:
+        query_words: Слова запроса.
+        all_sentences_normalized: Все нормализованные предложения.
+        
+    Returns:
+        Словарь {слово: idf_value}.
+    """
+    total = len(all_sentences_normalized)
+    if total == 0 or not query_words:
+        return {}
+    
+    doc_freq: dict[str, int] = {w: 0 for w in query_words}
+    for s in all_sentences_normalized:
+        for word in query_words:
+            if word_matches(word, s):
+                doc_freq[word] += 1
+    
+    return {
+        word: math.log((total + 1) / (freq + 1)) + 1.0
+        for word, freq in doc_freq.items()
+    }
+
+
 def _compute_tfidf_score(
     query_words: set[str],
     sentence_normalized: str,
-    all_sentences_normalized: list[str],
+    precomputed_idf: dict[str, float],
 ) -> float:
     """
     Вычисляет TF-IDF подобный score релевантности предложения.
-    
-    Вместо чистого подсчёта совпадений учитывает редкость слова
-    в документе — частые слова ("банк", "счёт") весят меньше.
+    Использует предрасчитанные IDF — не пересчитывает на каждое предложение.
     
     Args:
         query_words: Слова запроса.
         sentence_normalized: Текущее предложение (нормализованное).
-        all_sentences_normalized: Все предложения для подсчёта IDF.
+        precomputed_idf: Словарь {слово: idf} из _precompute_doc_freq.
         
     Returns:
         Score от 0.0 до 1.0+.
@@ -166,28 +194,15 @@ def _compute_tfidf_score(
     if not query_words or not sentence_normalized:
         return 0.0
     
-    total_sentences = len(all_sentences_normalized)
     score = 0.0
-    
     for word in query_words:
-        # TF: слово присутствует в предложении?
         tf = 1.0 if word_matches(word, sentence_normalized) else 0.0
-        
         if tf == 0.0:
             continue
-        
-        # IDF: насколько слово редкое в документе?
-        doc_freq = sum(
-            1 for s in all_sentences_normalized
-            if word_matches(word, s)
-        )
-        # +1 сглаживание, чтобы избежать деления на ноль
-        idf = math.log((total_sentences + 1) / (doc_freq + 1)) + 1.0
-        
+        idf = precomputed_idf.get(word, 0.0)
         score += tf * idf
     
-    # Нормализация по количеству слов запроса
-    return score / len(query_words)
+    return score / len(query_words) if query_words else 0.0
 
 
 def _informative_bonus(sentence: str) -> float:
@@ -217,28 +232,28 @@ class _ScoredSentence:
     position: int  # Позиция в оригинальном тексте
 
 
-# System prompt enforcing strict context-based answers with few-shot examples
-SYSTEM_PROMPT = """
-Ты суровый банковский AI-аналитик. Отвечай на вопрос строго на основе предоставленного текста.
+# System prompt для русскоязычных моделей с few-shot примерами
+SYSTEM_PROMPT = """Ты — банковский AI-ассистент Альфа-Банка. Отвечай на вопрос ПОЛНО и фактически точно, опираясь ТОЛЬКО на предоставленный контекст.
 
 ПРАВИЛА:
-1. Выдавай ТОЛЬКО факты из контекста. Никаких приветствий и лишних слов.
-2. Если в контексте нет прямого ответа, выбери самое релевантное предложение из контекста.
-3. Отвечай максимально емко. Объединяй длинные списки в одно-два предложения через запятую.
-4. Твой ответ должен быть ОДНО-ДВУХ предложЕНИЯМИ.
+1. Используй все релевантные факты из контекста. Не выдумывай.
+2. Если ответ — это перечень шагов или вариантов, оформи его списком или через точку с запятой. Сохраняй ВСЕ пункты.
+3. НЕ пиши вводных слов («Согласно фрагменту», «Таким образом», «В контексте указано»). Сразу давай суть.
+4. Не здоровайся, не предлагай помощь, без рекламы.
+5. Объём ответа — как в справке банка: обычно 2–5 предложений, при списках больше.
 
 ПРИМЕРЫ:
-Вопрос: Как узнать номер счёта?
-Контекст: Номер счёта отображается в мобильном приложении банка на вкладке "Мои счета". Также вы можете позвонить в поддержку.
-Ответ: Номер счёта отображается в мобильном приложении банка на вкладке "Мои счета".
-
 Вопрос: Что такое БИК?
-Контекст: БИК — это банковский идентификационный код, используемый для перечисления средств.
+Контекст: БИК — банковский идентификационный код для перечисления средств.
 Ответ: БИК — это банковский идентификационный код, используемый для перечисления средств.
 
-Вопрос: Как открыть вклад?
-Контекст: Для открытия вклада необходимо подъехать в отделение банка с паспортом и заполнить форму.
-Ответ: Для открытия вклада необходимо подъехать в отделение банка с паспортом и заполнить форму.
+Вопрос: Как получить карту?
+Контекст: Карту можно получить доставкой или в офисе. После получения нужно подписать договор и активировать карту в приложении: выберите карту → Активация → введите код из SMS → задайте пин-код.
+Ответ: Получить карту можно доставкой или в офисе. После получения подпишите договор и активируйте карту в приложении: выберите карту на главном экране, нажмите «Активация», введите код из SMS и задайте пин-код.
+
+Вопрос: Как узнать номер счёта?
+Контекст: Номер счёта отображается в мобильном приложении банка на вкладке «Мои счета». Также можно позвонить в поддержку.
+Ответ: Номер счёта отображается в мобильном приложении банка на вкладке «Мои счета». Для уточнения можно позвонить в поддержку.
 """.strip()
 
 
@@ -439,7 +454,12 @@ def extract_answer_from_context(
     if not raw_sentences:
         return ""
     
-    # ── Ѐаг 3: Scoring ВСЕХ предложений (без строгой фильтрации) ──
+    # ── Шаг 3: Предрасчёт IDF (один проход, а не O(N²)) ──────
+    
+    normalized_sentences = [normalize_text(s) for s in raw_sentences]
+    precomputed_idf = _precompute_doc_freq(meaningful_query_words, normalized_sentences)
+    
+    # ── Шаг 4: Scoring ВСЕХ предложений (без строгой фильтрации) ──
     
     scored: list[_ScoredSentence] = []
     total_sentences = len(raw_sentences)
@@ -455,13 +475,13 @@ def extract_answer_from_context(
         if words_count < 1 or words_count > config.max_sentence_words:
             continue
         
-        sentence_normalized = normalize_text(sentence)
+        sentence_normalized = normalized_sentences[idx]
         
-        # TF-IDF релевантность
+        # TF-IDF релевантность (используем предрасчитанный IDF)
         tfidf_score = _compute_tfidf_score(
             meaningful_query_words,
             sentence_normalized,
-            [normalize_text(s) for s in raw_sentences],
+            precomputed_idf,
         )
         
         # Штраф за позицию (предложения в начале документа важнее)

@@ -4,6 +4,31 @@ This file acts as a local memory bank for project-specific patterns, conventions
 
 ---
 
+## 2026-06-09 - Deep Code-Review / FullAudit.md
+
+### Patterns Discovered
+- Reference answers live in `data/sample_submission.csv` (baseline 75.8), column is **`answer_new`** (NOT `answer`) — submission column name mismatch is a silent-zero risk
+- Reference answers are LONG: 250–450+ chars, 3–6 sentences, markdown bullet lists — the 150-char/2-sentence cap was destroying BERTScore-Recall, not avoiding the L(q) penalty
+- Pipeline uses LEGACY `create_chunks()` which does NOT call `clean_text()`; the proper `Chunker` class (with cleaning) is unused → HTML/chunk_id noise leaks into FAISS + BM25
+- BM25 indexes raw `indexer.get_all_texts()`; reranker scores raw text too — cleaning only happens at `get_context()`, AFTER retrieval
+- FAISS query in `retriever.retrieve()` is NOT passed through `normalize_for_embedding` (ё→е/NFC) while the index IS — query/index normalization mismatch
+
+### Conventions
+- BERT-Recall-L length: no penalty if L ≤ 1.5*Lr, linear 1.5–3x, zero at ≥3*Lr. Target ~2*median(Lr); median ≈ 270 chars → set MAX_RESPONSE_CHARS≈500, MAX_SENTENCES≈5
+- `pipeline("text-generation")` returns prompt+gen by default; use `return_full_text=False` instead of fragile `split("</")` parsing
+- "Lost in the Middle" fix should be ZIGZAG (best chunk at start AND end), not a plain `[::-1]` reverse
+- baseline answers reference "Фрагмент N" → baseline prompt numbered chunks; strip these preambles in post-processing
+
+### Gotchas
+- `validate_answer` in kaggle_main.py only logs/counts — takes NO action; bad answers still go to submission
+- `cache.set()` calls `_save()` (full json.dump) on EVERY question → heavy I/O on 6977 rows
+- Persistent cache key is `query|model` with no pipeline version → stale answers survive prompt/chunk changes
+- Passing `device_map`/`torch_dtype` to `pipeline()` after model already loaded = double placement / OOM risk on 2xT4
+- `max_new_tokens=64` physically truncates long list-answers before any post-processing
+- Embedding batch_size=8 on GPU is underutilized for BGE-M3; empty_cache() per batch slows indexing
+
+---
+
 ## Template
 
 ```markdown
@@ -378,3 +403,27 @@ This file acts as a local memory bank for project-specific patterns, conventions
 - Model must be loaded with `trust_remote_code=True` for custom architectures
 - `padding='max_length'` required in tokenization to avoid ValueError with variable lengths
 - `warmup_ratio` deprecated in v5.2, use `warmup_steps` instead
+
+---
+
+## 2026-06-08 - Integrated Fine-tuned Vikhr-1B Model from HuggingFace
+
+### Patterns Discovered
+- Fine-tuned model `lirex111/vikhrllama1B_AlfaBank` available on HuggingFace Hub
+- Model uses same chat template as base Vikhr-Llama-3.2-1B (Llama-style)
+- Can be used directly for inference without local training
+
+### Conventions
+- `vikhr-1b-finetuned` added as first choice in `KAGGLE_MODELS` and `FINETUNING_MODELS`
+- Model automatically detected via "Vikhr" in name for chat template handling
+- No code changes needed - works with existing `apply_chat_template` logic
+
+### Gotchas
+- Fine-tuned model may have different response format - test before production
+- Model hosted on HuggingFace requires internet access for download
+- Cache will help avoid re-downloading on subsequent runs
+
+### Gotchas (updated)
+- Fine-tuned model `lirex111/vikhrllama1B_AlfaBank` contains "vikhr" (lowercase), not "Vikhr"
+- Added `"vikhr" in self.model_name` check alongside `"Vikhr"` for case-insensitive detection
+- Both conditions needed: for prompt formatting (line 245) and answer extraction (line 269)

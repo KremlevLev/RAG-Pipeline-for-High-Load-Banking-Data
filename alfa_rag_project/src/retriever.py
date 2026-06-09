@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple, Set
 
 import numpy as np
+import torch
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
 from config import TOP_K_RETRIEVAL, TOP_K_RERANK, RERANKER_MODEL, TOP_K_BM25, RERANKER_BATCH_SIZE
-from indexer import Indexer
+from indexer import Indexer, normalize_for_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -275,9 +276,15 @@ class Retriever:
             cleaner_config: Settings for chunk text cleaning.
         """
         self.indexer = indexer
-        self.reranker = CrossEncoder(reranker_model)
         self.cleaner_config = cleaner_config or CleanerConfig()
-        
+
+        # FIX-R5: явно прибиваем reranker к GPU (не полагаемся на авто-выбор)
+        rerank_device = "cuda:1" if torch.cuda.device_count() >= 2 else (
+            "cuda:0" if torch.cuda.is_available() else "cpu"
+        )
+        self.reranker = CrossEncoder(reranker_model, device=rerank_device)
+        logger.info("Reranker loaded on device: %s", rerank_device)
+
         # Build BM25 index from all chunk texts
         self._bm25_index: Optional[BM25Okapi] = None
         self._bm25_texts: list[str] = []
@@ -358,11 +365,11 @@ class Retriever:
             raise RuntimeError("Indexer not built or loaded")
         
         # ── Stage 1: FAISS semantic search ───────────────────────────────
+        norm_query = normalize_for_embedding(query)     # FIX-R3: ё→е, NFC
         query_embedding = self.indexer.model.encode(
-            [query],
+            [norm_query],
             normalize_embeddings=True,
-        )
-        query_embedding = query_embedding.astype(np.float32)
+        ).astype(np.float32)
         
         scores, indices = self.indexer.index.search(
             query_embedding,
@@ -378,28 +385,31 @@ class Retriever:
         # ── Stage 2: BM25 lexical search ───────────────────────────────
         bm25_candidates = self._bm25_search(query)
         
-        # ── Stage 3: Merge and deduplicate ───────────────────────────────
-        seen_ids: Set[int] = set()
-        merged_candidates: List[Tuple[int, str]] = []
-        
-        # Add FAISS candidates first
-        for chunk_id, text in faiss_candidates:
-            if chunk_id not in seen_ids:
-                seen_ids.add(chunk_id)
-                merged_candidates.append((chunk_id, text))
-        
-        # Add BM25 candidates (deduplicated)
-        for chunk_id, text, _ in bm25_candidates:
-            if chunk_id not in seen_ids:
-                seen_ids.add(chunk_id)
-                merged_candidates.append((chunk_id, text))
-        
+        # ── Stage 3: Reciprocal Rank Fusion (RRF) ── FIX-R4 ─────────────
+        K_RRF = 60
+        rrf: dict[int, float] = {}
+        text_by_id: dict[int, str] = {}
+
+        for rank, (cid, text) in enumerate(faiss_candidates):
+            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (K_RRF + rank)
+            text_by_id[cid] = text
+        for rank, (cid, text, _) in enumerate(bm25_candidates):
+            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (K_RRF + rank)
+            text_by_id.setdefault(cid, text)
+
+        merged_candidates = [
+            (cid, text_by_id[cid])
+            for cid in sorted(rrf, key=rrf.get, reverse=True)
+        ]
         if not merged_candidates:
             return []
 
-        # ── Stage 4: Cross-encoder reranking (batched for memory efficiency) ───────────────────────────────
-        # Process in small batches to avoid CUDA OOM with large reranker model
-        all_pairs = [(query, text) for _, text in merged_candidates]
+        # ── Stage 4: Cross-encoder reranking (batched, на ОЧИЩЕННОМ тексте) ──
+        # FIX-R2: reranker скорит чистый текст, не сырой HTML
+        all_pairs = [
+            (query, clean_chunk_text(text, self.cleaner_config) or text)
+            for _, text in merged_candidates
+        ]
         rerank_scores = []
         
         for i in range(0, len(all_pairs), RERANKER_BATCH_SIZE):
@@ -467,11 +477,17 @@ class Retriever:
             
             context_parts.append(cleaned)
         
-        # "Lost in the Middle" fix: reverse the order of chunks
-        # This ensures the most relevant chunks appear at both start and end
-        context_parts = context_parts[::-1]
+        # FIX-G4: "Lost in the Middle" fix — зигзаг (топовые чанки по краям)
+        # results уже отсортированы по убыванию релевантности.
+        # Чётные (0,2,4...) → head (начало), нечётные (1,3,5...) → tail (конец).
+        head, tail = [], []
+        for i, part in enumerate(context_parts):
+            (head if i % 2 == 0 else tail).append(part)
+        context_parts = head + tail[::-1]
         
-        return "\n\n".join(context_parts)
+        # FIX-G5: нумеруем фрагменты для cross-attention модели
+        labeled = [f"[Фрагмент {i+1}] {p}" for i, p in enumerate(context_parts)]
+        return "\n\n".join(labeled)
 
 
 # ─────────────────────────────────────────────

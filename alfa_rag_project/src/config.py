@@ -40,9 +40,12 @@ TOP_K_RERANK: Final[int] = 10  # Number of final results after reranking
 RERANKER_BATCH_SIZE: Final[int] = 15  # Process 15 pairs at a time (Vikhr-1B is smaller, more memory available)
 
 # Generation parameters - optimized for BERT-Recall-L
-MAX_SENTENCES: Final[int] = 2  # Maximum sentences in answer (primary limit)
-MAX_RESPONSE_WORDS: Final[int] = 30  # Soft word limit for density
-MAX_RESPONSE_CHARS: Final[int] = 150  # Hard safety limit (3x reference length)
+# Эталоны (sample_submission.csv) имеют медиану ~200-280 символов, max 700+.
+# Порог без штрафа = 1.5 * Lr. Цель: покрыть recall, не уходя в 3x.
+# 500 символов сидит между 1.5xLr (~350-400) и 3xLr (~700-800).
+MAX_SENTENCES: Final[int] = 5          # было 2 — душило recall на длинных эталонах
+MAX_RESPONSE_WORDS: Final[int] = 80    # было 30
+MAX_RESPONSE_CHARS: Final[int] = 500   # было 150 — главная утечка скора
 TEMPERATURE: Final[float] = 0.1  # Low temperature for deterministic output
 
 # API timeout

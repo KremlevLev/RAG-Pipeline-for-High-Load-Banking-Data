@@ -65,78 +65,113 @@ KAGGLE_MODELS = {
 # Flag for int8 quantization (speeds up inference on T4 GPU)
 USE_INT8: bool = False  # Disabled - was slower on Kaggle T4
 
+import re
+
+
+# ─────────────────────────────────────────────
+# Pipeline version (менять при правке промпта/чанкеров/пост-процессинга)
+# ─────────────────────────────────────────────
+PIPELINE_VERSION: str = "v2-adaptive-len"
+
+
 # System prompt для русскоязычных моделей с few-shot примерами
-SYSTEM_PROMPT = """Ты суровый банковский AI-аналитик. Отвечай на вопрос строго на основе предоставленного текста.
+SYSTEM_PROMPT = """Ты — банковский AI-ассистент Альфа-Банка. Отвечай на вопрос ПОЛНО и фактически точно, опираясь ТОЛЬКО на предоставленный контекст.
 
 ПРАВИЛА:
-1. Выдавай ТОЛЬКО факты из контекста. Никаких приветствий и лишних слов.
-2. Если в контексте нет прямого ответа, выбери самое релевантное предложение из контекста.
-3. Отвечай максимально емко. Объединяй длинные списки в одно-два предложения через запятую.
-4. Твой ответ не должен превышать 3 предложений.
+1. Используй все релевантные факты из контекста. Не выдумывай.
+2. Если ответ — это перечень шагов или вариантов, оформи его списком или через точку с запятой. Сохраняй ВСЕ пункты.
+3. НЕ пиши вводных слов («Согласно фрагменту», «Таким образом», «В контексте указано»). Сразу давай суть.
+4. Не здоровайся, не предлагай помощь, без рекламы.
+5. Объём ответа — как в справке банка: обычно 2–5 предложений, при списках больше.
 
 ПРИМЕРЫ:
-Вопрос: Как узнать номер счёта?
-Контекст: Номер счёта отображается в мобильном приложении банка на вкладке "Мои счета". Также вы можете позвонить в поддержку.
-Ответ: Номер счёта отображается в мобильном приложении банка на вкладке "Мои счета".
-
 Вопрос: Что такое БИК?
-Контекст: БИК — это банковский идентификационный код, используемый для перечисления средств.
+Контекст: БИК — банковский идентификационный код для перечисления средств.
 Ответ: БИК — это банковский идентификационный код, используемый для перечисления средств.
 
-Вопрос: Как открыть вклад?
-Контекст: Для открытия вклада необходимо подъехать в отделение банка с паспортом и заполнить форму.
-Ответ: Для открытия вклада необходимо подъехать в отделение банка с паспортом и заполнить форму.
+Вопрос: Как получить карту?
+Контекст: Карту можно получить доставкой или в офисе. После получения нужно подписать договор и активировать карту в приложении: выберите карту → Активация → введите код из SMS → задайте пин-код.
+Ответ: Получить карту можно доставкой или в офисе. После получения подпишите договор и активируйте карту в приложении: выберите карту на главном экране, нажмите «Активация», введите код из SMS и задайте пин-код.
+
+Вопрос: Как узнать номер счёта?
+Контекст: Номер счёта отображается в мобильном приложении банка на вкладке «Мои счета». Также можно позвонить в поддержку.
+Ответ: Номер счёта отображается в мобильном приложении банка на вкладке «Мои счета». Для уточнения можно позвонить в поддержку.
 """.strip()
+
+
+# ─────────────────────────────────────────────
+# Стрипалка «воды» из LLM-ответа
+# ─────────────────────────────────────────────
+
+_PREAMBLE_RE = re.compile(
+    r"^\s*(?:согласно\s+(?:фрагмент[ауые]*\s*\d*|контекст[ауе]*|предоставленны[мх][^,.:]*)[,:]?\s*"
+    r"|в\s+фрагмент[еах]*\s*\d*\s*(?:указано|сказано|говорится)[,:]?\s*"
+    r"|таким образом[,:]?\s*"
+    r"|исходя из (?:контекста|вышесказанного)[,:]?\s*"
+    r"|ответ[:：]\s*)",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+
+def strip_preamble(text: str) -> str:
+    """Убирает мета-вводные клише, разбавляющие ответ."""
+    prev = None
+    while prev != text:  # многократно, если клише вложены
+        prev = text
+        text = _PREAMBLE_RE.sub("", text).lstrip(" «\"—-:")
+    # убрать остаточные «(Фрагмент 3)» в конце
+    text = re.sub(r"\s*\(?\s*фрагмент\s*\d+\s*\)?\.?\s*$", "", text, flags=re.IGNORECASE).strip()
+    return text
 
 
 def truncate_to_chars(text: str, max_chars: int) -> str:
     """
     Truncate text to maximum character count.
-    
+
     This is a SAFETY limit to prevent 3x length penalty.
-    
+
     Args:
         text: Input text
         max_chars: Maximum number of characters
-        
+
     Returns:
         Truncated text
     """
     if len(text) <= max_chars:
         return text
-    
+
     truncated = text[:max_chars]
-    
+
     for punct in [".", "!", "?", "»"]:
         last_punct = truncated.rfind(punct)
         if last_punct > max_chars * 0.3:
             return truncated[:last_punct + 1]
-    
+
     last_space = truncated.rfind(" ")
     if last_space > max_chars * 0.5:
         return truncated[:last_space]
-    
+
     return truncated
 
 
 def truncate_to_sentences(text: str, max_sentences: int) -> str:
     """
     Truncate text to maximum number of sentences.
-    
+
     This is the PRIMARY truncation for BERT-Recall-L compliance.
-    
+
     Args:
         text: Input text
         max_sentences: Maximum number of sentences
-        
+
     Returns:
         Truncated text
     """
     sentences = [s.text.strip() for s in razdel.sentenize(text) if s.text.strip()]
-    
+
     if len(sentences) <= max_sentences:
         return text
-    
+
     return " ".join(sentences[:max_sentences])
 
 
@@ -204,13 +239,13 @@ class KaggleGenerator:
             **model_kwargs,
         )
 
-        # Создаем pipeline
+        # Создаем pipeline — НЕ передаём device_map/torch_dtype повторно,
+        # модель уже размещена на GPU через AutoModelForCausalLM.
+        # Повторная передача device_map в pipeline может вызвать двойное размещение / OOM на 2×T4.
         self.pipe = pipeline(
             "text-generation",
             model=self.model,
             tokenizer=self.tokenizer,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
         )
 
         logger.info("Model loaded successfully")
@@ -255,31 +290,20 @@ class KaggleGenerator:
             # Генерируем
             outputs = self.pipe(
                 prompt,
-                max_new_tokens=64,  # Reduced for speed (answers limited to 2 sentences anyway)
+                max_new_tokens=320,            # FIX-G3: 64 → 320 (эталоны до 100+ слов)
                 temperature=TEMPERATURE,
                 do_sample=TEMPERATURE > 0,
                 top_p=0.9 if TEMPERATURE > 0 else None,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
+                return_full_text=False,        # FIX-2: возвращает ТОЛЬКО генерацию
             )
 
-            answer = outputs[0]["generated_text"]
+            # FIX-2: return_full_text=False исключает ручное вырезание промпта
+            answer = outputs[0]["generated_text"].strip()
 
-            # Убираем промпт из ответа (для Qwen/Llama/Vikhr)
-            if "Qwen" in self.model_name or "Llama" in self.model_name or "Vikhr" in self.model_name or "vikhr" in self.model_name:
-                # Ответ после последнего </
-                if "</" in answer:
-                    answer = answer.split("</")[-1]
-                    # Убираем теги
-                    for tag in ["system", "user", "assistant"]:
-                        if f"<{tag}>" in answer:
-                            answer = answer.split(f"<{tag}>")[-1]
-                # Берем только сгенерированный текст
-                if prompt in answer:
-                    answer = answer[len(prompt):]
-
-            # Очищаем и обрезаем
-            answer = answer.strip()
+            # Пост-обработка: чистим воду → режем по предложениям → safety по символам
+            answer = strip_preamble(answer)               # FIX-G6
             answer = truncate_to_sentences(answer, MAX_SENTENCES)
             answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
 
@@ -295,11 +319,12 @@ class KaggleGenerator:
 # ─────────────────────────────────────────────
 
 class AnswerCache:
-    """Персистентный кеш ответов на диске (JSON)."""
+    """Персистентный кеш ответов на диске (JSON) — с батч-сохранением."""
 
     def __init__(self, cache_path: Path):
         self._path = cache_path
         self._data: dict[str, dict] = {}
+        self._dirty: bool = False
         self._load()
 
     def _load(self) -> None:
@@ -314,14 +339,19 @@ class AnswerCache:
         else:
             logger.info("No cache found, starting fresh")
 
-    def _save(self) -> None:
+    def save(self) -> None:
+        """Сохраняет кеш на диск (только если были изменения)."""
+        if not self._dirty:
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
+        self._dirty = False
+        logger.debug("Cache saved: %d entries", len(self._data))
 
     @staticmethod
     def _make_key(query: str, model: str) -> str:
-        raw = f"{query.strip()}|{model}"
+        raw = f"{PIPELINE_VERSION}|{query.strip()}|{model}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     def get(self, query: str, model: str) -> Optional[str]:
@@ -330,14 +360,16 @@ class AnswerCache:
         return entry["answer"] if entry else None
 
     def set(self, query: str, model: str, q_id: str, answer: str) -> None:
+        """Добавляет запись в кеш (без немедленной записи на диск)."""
         key = self._make_key(query, model)
         self._data[key] = {
             "q_id": q_id,
             "query": query,
             "answer": answer,
             "model": model,
+            "version": PIPELINE_VERSION,
         }
-        self._save()
+        self._dirty = True
 
     def __len__(self) -> int:
         return len(self._data)
@@ -448,17 +480,19 @@ def run_pipeline(
                 logger.info("Resuming from checkpoint: %d answers", start_idx)
                 break
 
-    for idx, row in enumerate(tqdm(questions_df.iterrows(), total=total, desc="Generating")):
-        if idx < start_idx:
-            continue
-        _, row = row
+    # FIX-6: резюм по q_id, а не по индексу (надёжнее)
+    done_ids = {str(r["q_id"]) for r in results}
+
+    for _, row in tqdm(questions_df.iterrows(), total=total, desc="Generating"):
         q_id = str(row["q_id"])
+        if q_id in done_ids:
+            continue
         query = str(row["query"]).strip()
 
         # Шаг 1: Проверяем кеш
         cached_answer = cache.get(query, hf_model_name)
         if cached_answer is not None:
-            results.append({"q_id": q_id, "answer": cached_answer})
+            results.append({"q_id": q_id, "answer_new": cached_answer})
             stats["cached"] += 1
             continue
 
@@ -469,34 +503,38 @@ def run_pipeline(
             answer = generator.generate(query, context)
         except Exception as e:
             logger.error("Failed to process q_id=%s: %s", q_id, e, exc_info=True)
-            # Use already-retrieved context if available, otherwise empty string
-            # (don't call get_context again - it will fail with same error)
             answer = extract_answer_from_context(query, context or "")
             stats["failed"] += 1
 
-        # Шаг 3: Валидация
+        # Шаг 3: Валидация (FIX-3: теперь она ДЕЙСТВУЕТ — заменяет плохой ответ на fallback)
         if validate_answers and answer:
             if not validate_answer(query, answer, min_overlap):
-                logger.warning(
-                    "Invalid answer for q_id=%s | query='%s' | answer='%s'",
-                    q_id,
-                    query[:60],
-                    answer[:60],
-                )
+                fb = extract_answer_from_context(query, context or "")
+                if fb and validate_answer(query, fb, min_overlap):
+                    logger.warning(
+                        "Invalid answer for q_id=%s — fallback applied", q_id,
+                    )
+                    answer = fb
+                else:
+                    logger.warning(
+                        "Invalid answer for q_id=%s — no valid fallback, keeping original",
+                        q_id,
+                    )
                 stats["invalid"] += 1
 
-        # Шаг 4: Кешируем и сохраняем
+        # Шаг 4: Кешируем (без немедленной записи на диск)
         if answer:
             cache.set(query, hf_model_name, q_id, answer)
 
-        results.append({"q_id": q_id, "answer": answer})
+        results.append({"q_id": q_id, "answer_new": answer})
         stats["generated"] += 1
 
-        # Чекпоинт
-        if (idx + 1) % CHECKPOINT_INTERVAL == 0:
-            checkpoint_path = SUBMISSION_CSV.parent / f"submission_checkpoint_{idx + 1}.csv"
+        # Чекпоинт + батч-сохранение кеша
+        if (len(results)) % CHECKPOINT_INTERVAL == 0:
+            checkpoint_path = SUBMISSION_CSV.parent / f"submission_checkpoint_{len(results)}.csv"
             pd.DataFrame(results).to_csv(checkpoint_path, index=False)
-            logger.info("Checkpoint saved: %d answers", idx + 1)
+            cache.save()  # FIX-4: пишем кеш раз в 2000 вопросов
+            logger.info("Checkpoint saved: %d answers", len(results))
 
     # ── Итоги ─────────────────────────────────────────────────
     logger.info(
@@ -511,8 +549,9 @@ def run_pipeline(
     # ── Сохранение ────────────────────────────────────────────
     results_df = pd.DataFrame(results)
     SUBMISSION_CSV.parent.mkdir(parents=True, exist_ok=True)
+    # FIX-5.1: используем колонку answer_new (как в sample_submission.csv)
     results_df.to_csv(SUBMISSION_CSV, index=False)
-    logger.info("Results saved to %s (%d rows)", SUBMISSION_CSV, len(results_df))
+    logger.info("Results saved to %s (%d rows) with column 'answer_new'", SUBMISSION_CSV, len(results_df))
 
 
 # ─────────────────────────────────────────────
