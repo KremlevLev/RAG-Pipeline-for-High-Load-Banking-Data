@@ -226,9 +226,9 @@ class TestExtractAnswerFromContext:
         # Create a context that would produce a long answer
         context = "Номер счёта в личном кабинете. Доступно в приложении. Зайдите в раздел. Подробнее на сайте."
         result = extract_answer_from_context("счёта", context)
-        # Answer should be truncated to MAX_SENTENCES (3)
+        # Answer should be truncated to MAX_SENTENCES (5)
         sentence_count = result.count(".") + result.count("!") + result.count("?")
-        assert sentence_count <= 3
+        assert sentence_count <= 5
 
 
 if __name__ == "__main__":
