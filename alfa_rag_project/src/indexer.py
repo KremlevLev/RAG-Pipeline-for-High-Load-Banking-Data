@@ -3,6 +3,7 @@ Indexing module for RAG pipeline.
 Handles embedding generation and FAISS index management.
 """
 
+import gc
 import hashlib
 import json
 import logging
@@ -227,23 +228,30 @@ class Indexer:
         batch_size = 32  # 32 — оптимально для BGE-M3 на T4 (было 8 — недогруз GPU)
 
         all_embeddings = []
-        with tqdm(total=len(texts_for_embedding), desc="Embedding") as pbar:
-            for i in range(0, len(texts_for_embedding), batch_size):
-                batch = texts_for_embedding[i:i + batch_size]
-                batch_emb = self.model.encode(
-                    batch,
-                    batch_size=len(batch),
-                    show_progress_bar=False,
-                    normalize_embeddings=True,
-                    device=device,
-                )
-                all_embeddings.append(batch_emb)
-                pbar.update(len(batch))
-                # Очистка кэша GPU раз в 10 батчей (а не каждый — пустая трата времени)
-                if device == "cuda" and (i // batch_size) % 10 == 0:
-                    torch.cuda.empty_cache()
+        # CUDA OOM mitigation: отключаем градиенты (не нужны для инференса)
+        with torch.no_grad():
+            with tqdm(total=len(texts_for_embedding), desc="Embedding") as pbar:
+                for i in range(0, len(texts_for_embedding), batch_size):
+                    batch = texts_for_embedding[i:i + batch_size]
+                    batch_emb = self.model.encode(
+                        batch,
+                        batch_size=len(batch),
+                        show_progress_bar=False,
+                        normalize_embeddings=True,
+                        device=device,
+                    )
+                    all_embeddings.append(batch_emb)
+                    pbar.update(len(batch))
+                    # Очистка кэша GPU раз в 10 батчей
+                    if device == "cuda" and (i // batch_size) % 10 == 0:
+                        torch.cuda.empty_cache()
 
         embeddings = np.vstack(all_embeddings).astype(np.float32)
+
+        # Очистка памяти после эмбеддингов
+        del all_embeddings
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # ── Шаг 4: FAISS индекс ───────────────────────────────
         dim = embeddings.shape[1]

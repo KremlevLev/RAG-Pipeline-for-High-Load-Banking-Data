@@ -412,10 +412,14 @@ class Retriever:
         ]
         rerank_scores = []
         
-        for i in range(0, len(all_pairs), RERANKER_BATCH_SIZE):
-            batch = all_pairs[i:i + RERANKER_BATCH_SIZE]
-            batch_scores = self.reranker.predict(batch)
-            rerank_scores.extend(batch_scores.tolist() if hasattr(batch_scores, 'tolist') else list(batch_scores))
+        # CUDA OOM mitigation: отключаем градиенты в reranker
+        with torch.no_grad():
+            for i in range(0, len(all_pairs), RERANKER_BATCH_SIZE):
+                batch = all_pairs[i:i + RERANKER_BATCH_SIZE]
+                batch_scores = self.reranker.predict(batch)
+                rerank_scores.extend(
+                    batch_scores.tolist() if hasattr(batch_scores, 'tolist') else list(batch_scores)
+                )
         
         top_indices = np.argsort(rerank_scores)[::-1][:TOP_K_RERANK]
         

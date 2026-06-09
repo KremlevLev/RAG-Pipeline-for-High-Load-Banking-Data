@@ -4,6 +4,7 @@ Uses Hugging Face Inference API or local transformers for open-source LLMs.
 Supports 2x T4 GPU for faster inference.
 """
 
+import gc
 import hashlib
 import json
 import logging
@@ -11,6 +12,9 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+# CUDA OOM mitigation: expandable segments for memory fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import pandas as pd
 import razdel
@@ -288,19 +292,19 @@ class KaggleGenerator:
                 # Универсальный формат
                 prompt = f"{SYSTEM_PROMPT}\n\nВопрос: {query}\n\nКонтекст:\n{context}\n\nОтвет:"
 
-            # Генерируем
-            outputs = self.pipe(
-                prompt,
-                max_new_tokens=320,            # FIX-G3: 64 → 320 (эталоны до 100+ слов)
-                temperature=TEMPERATURE,
-                do_sample=TEMPERATURE > 0,
-                top_p=0.9 if TEMPERATURE > 0 else None,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                return_full_text=False,        # FIX-2: возвращает ТОЛЬКО генерацию
-            )
+            # CUDA OOM mitigation: отключаем градиенты во время инференса
+            with torch.no_grad():
+                outputs = self.pipe(
+                    prompt,
+                    max_new_tokens=320,
+                    temperature=TEMPERATURE,
+                    do_sample=TEMPERATURE > 0,
+                    top_p=0.9 if TEMPERATURE > 0 else None,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    return_full_text=False,
+                )
 
-            # FIX-2: return_full_text=False исключает ручное вырезание промпта
             answer = outputs[0]["generated_text"].strip()
 
             # Пост-обработка: чистим воду → режем по предложениям → safety по символам
@@ -597,8 +601,18 @@ def run_pipeline(
         logger.info("Loading existing index")
         indexer = load_index()
 
+    # Очистка памяти после этапа индексации
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("Memory cleared after indexing")
+
     # ── Retriever ─────────────────────────────────────────────
     retriever = create_retriever(indexer)
+
+    # Очистка памяти после загрузки reranker'а
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("Memory cleared after retriever (reranker loaded)")
 
     # ── Generator ─────────────────────────────────────────────
     hf_model_name = KAGGLE_MODELS.get(llm_model, llm_model)
@@ -607,6 +621,11 @@ def run_pipeline(
         logger.info("Using vLLM generator (x5-10 throughput on T4)")
     else:
         generator = KaggleGenerator(model_name=hf_model_name)
+
+    # Финальная очистка памяти перед циклом генерации
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("Memory cleared after generator init — starting inference loop")
 
     # ── Кеш ───────────────────────────────────────────────────
     cache = AnswerCache(cache_path)
