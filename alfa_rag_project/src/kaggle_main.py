@@ -379,6 +379,15 @@ class VLLMGenerator:
 
     def _build_prompt(self, query: str, context: str) -> str:
         """Build prompt from query and context using chat template."""
+        # FIX: truncate context to avoid vLLM max_seq_len=4096 overflow
+        # 4254 tokens warning means context is too long
+        if len(context) > 2500:
+            context = context[:2500]
+            # Try to end at sentence boundary
+            last_punct = max(context.rfind("."), context.rfind("!"), context.rfind("?"), context.rfind("»"))
+            if last_punct > 1500:
+                context = context[:last_punct + 1]
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Вопрос: {query}\n\nКонтекст:\n{context}\n\nОтветь кратко на основе контекста."},
