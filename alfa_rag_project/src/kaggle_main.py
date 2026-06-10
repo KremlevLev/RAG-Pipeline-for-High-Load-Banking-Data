@@ -381,9 +381,11 @@ class VLLMGenerator:
             {"role": "user", "content": f"Вопрос: {query}\n\nКонтекст:\n{context}\n\nОтветь кратко на основе контекста."},
         ]
         # vLLM требует токенайзер для apply_chat_template
+        # FIX: merged model имеет сломанный tokenizer_config (TokenizersBackend)
         from transformers import AutoTokenizer
+        tokenizer_id = "Vikhrmodels/Vikhr-Llama-3.2-1B-instruct"
         tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, trust_remote_code=True,
+            tokenizer_id, trust_remote_code=True,
         )
         return tokenizer.apply_chat_template(
             messages,
