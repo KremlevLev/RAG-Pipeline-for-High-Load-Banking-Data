@@ -629,10 +629,10 @@ def run_pipeline(
     hf_model_name = KAGGLE_MODELS.get(llm_model, llm_model)
 
     # vLLM не умеет читать конфиг fine-tuned модели lirex111/vikhrllama1B_AlfaBank
-    # Поэтому для vLLM используем base Vikhr, а fine-tuned оставляем для HF-режима.
+    # Поэтому для vLLM используем уже слитую плоскую модель.
     if use_vllm and llm_model == "vikhr-1b-finetuned":
-        vllm_model_name = "Vikhrmodels/Vikhr-Llama-3.2-1B-instruct"
-        logger.info("Using base Vikhr for vLLM: %s", vllm_model_name)
+        vllm_model_name = "lirex111/vikhrllama1B_AlfaBank_merged"
+        logger.info("Using merged model for vLLM: %s", vllm_model_name)
     else:
         vllm_model_name = hf_model_name
 
