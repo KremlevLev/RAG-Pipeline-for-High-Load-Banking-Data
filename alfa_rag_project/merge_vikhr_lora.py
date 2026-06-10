@@ -94,6 +94,12 @@ def merge_and_save(
     if push_repo:
         print(f"[5/5] Pushing merged model to Hugging Face: {push_repo}")
         api = HfApi()
+        # Создаём репо, если его ещё нет
+        try:
+            api.create_repo(repo_id=push_repo, repo_type="model", exist_ok=True)
+            print(f"[5/5] Repo ready: https://huggingface.co/{push_repo}")
+        except Exception as e:
+            print(f"[5/5] Repo creation warning: {e}")
         api.upload_folder(
             folder_path=str(save_path),
             repo_id=push_repo,
