@@ -577,10 +577,20 @@ def _extract_meaningful_words(text: str) -> set[str]:
     }
 
 
-def validate_answer(query: str, answer: str, min_overlap: int = 1) -> bool:
-    """Проверяет релевантность ответа вопросу."""
+def validate_answer(query: str, answer: str, min_overlap: int = 0) -> bool:
+    """
+    Очень мягкая проверка релевантности ответа вопросу.
+
+    ВАЖНО: строгий word-overlap ломает RAG-качество — хорошие ответы
+    часто не содержат дословных слов из вопроса, но семантически верны.
+    Поэтому по умолчанию НЕ режем LLM-ответы.
+    """
     if not answer or not answer.strip():
         return False
+
+    # Никогда не режем осмысленный ответ только из-за отсутствия overlap
+    if min_overlap <= 0:
+        return True
 
     query_words = _extract_meaningful_words(query)
     answer_words = _extract_meaningful_words(answer)
