@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -702,6 +703,14 @@ def run_pipeline(
     stats = {"cached": 0, "generated": 0, "failed": 0, "invalid": 0}
     CHECKPOINT_INTERVAL = 2000
 
+    # Speed guard: stop if generation is too slow to finish in 12h
+    SPEED_GUARD_ENABLED = True
+    SPEED_GUARD_MIN_GENERATIONS = 20
+    SPEED_GUARD_MAX_AVG_SECONDS = 6.5
+    generation_start_time: float | None = None
+    generation_elapsed = 0.0
+    generation_count = 0
+
     # Проверяем последний чекпоинт
     start_idx = 0
     for cp_num in [6000, 4000, 2000]:
@@ -724,8 +733,19 @@ def run_pipeline(
         batch_contexts: list[str] = []
 
         def process_batch() -> None:
+            nonlocal generation_start_time, generation_elapsed, generation_count
+
             if not batch_queries:
                 return
+
+            batch_started = time.perf_counter()
+            if generation_start_time is None:
+                generation_start_time = batch_started
+                logger.info(
+                    "Speed guard started | threshold=%.1fs/question | sample_after=%d",
+                    SPEED_GUARD_MAX_AVG_SECONDS,
+                    SPEED_GUARD_MIN_GENERATIONS,
+                )
 
             try:
                 answers = generator.generate_batch(batch_queries, batch_contexts)
@@ -752,6 +772,7 @@ def run_pipeline(
 
                     results.append({"q_id": q_id, "answer_new": answer})
                     stats["generated"] += 1
+                    generation_count += 1
 
             except Exception as e:
                 logger.error("Batch generation failed: %s", e, exc_info=True)
@@ -788,6 +809,26 @@ def run_pipeline(
 
                     results.append({"q_id": q_id, "answer_new": answer})
                     stats["generated"] += 1
+                    generation_count += 1
+
+            batch_elapsed = time.perf_counter() - batch_started
+            generation_elapsed += batch_elapsed
+
+            if SPEED_GUARD_ENABLED and generation_count >= SPEED_GUARD_MIN_GENERATIONS:
+                avg_seconds = generation_elapsed / generation_count
+                logger.info(
+                    "Speed guard | generated=%d | avg=%.2fs/question | elapsed=%.1fs | projected=%.1fh",
+                    generation_count,
+                    avg_seconds,
+                    generation_elapsed,
+                    generation_elapsed * (total - len(results)) / generation_count / 3600,
+                )
+                if avg_seconds >= SPEED_GUARD_MAX_AVG_SECONDS:
+                    raise RuntimeError(
+                        f"Generation too slow: avg={avg_seconds:.2f}s/question >= "
+                        f"threshold={SPEED_GUARD_MAX_AVG_SECONDS:.2f}s/question. "
+                        "Stopping to avoid exceeding 12h session."
+                    )
 
             # Чекпоинт + батч-сохранение кеша
             if (len(results)) % CHECKPOINT_INTERVAL == 0:
@@ -835,6 +876,14 @@ def run_pipeline(
 
     else:
         # ── HF pipeline (old per-question loop) ─────────────────
+        if SPEED_GUARD_ENABLED:
+            logger.info(
+                "Speed guard started | threshold=%.1fs/question | sample_after=%d",
+                SPEED_GUARD_MAX_AVG_SECONDS,
+                SPEED_GUARD_MIN_GENERATIONS,
+            )
+        generation_start_time = time.perf_counter()
+
         for _, row in tqdm(questions_df.iterrows(), total=total, desc="Generating"):
             q_id = str(row["q_id"])
             if q_id in done_ids:
@@ -847,6 +896,8 @@ def run_pipeline(
                 results.append({"q_id": q_id, "answer_new": cached_answer})
                 stats["cached"] += 1
                 continue
+
+            item_started = time.perf_counter()
 
             # Шаг 2: Retrieval + Generation
             context = None
@@ -861,6 +912,25 @@ def run_pipeline(
                     sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
                     answer = sentences[0] if sentences else query
                 stats["failed"] += 1
+
+            generation_elapsed += time.perf_counter() - item_started
+            generation_count += 1
+
+            if SPEED_GUARD_ENABLED and generation_count >= SPEED_GUARD_MIN_GENERATIONS:
+                avg_seconds = generation_elapsed / generation_count
+                logger.info(
+                    "Speed guard | generated=%d | avg=%.2fs/question | elapsed=%.1fs | projected=%.1fh",
+                    generation_count,
+                    avg_seconds,
+                    generation_elapsed,
+                    generation_elapsed * (total - len(results)) / generation_count / 3600,
+                )
+                if avg_seconds >= SPEED_GUARD_MAX_AVG_SECONDS:
+                    raise RuntimeError(
+                        f"Generation too slow: avg={avg_seconds:.2f}s/question >= "
+                        f"threshold={SPEED_GUARD_MAX_AVG_SECONDS:.2f}s/question. "
+                        "Stopping to avoid exceeding 12h session."
+                    )
 
             # Шаг 3: Валидация
             if validate_answers and answer:
