@@ -266,7 +266,7 @@ class KaggleGenerator:
         Returns:
             Generated answer (truncated to max sentences and chars)
         """
-        # Даже пустой контекст должен вернуть что-то из fallback, чтобы не было "Недостаточно информации"
+        # Даже пустой контекст должен вернуть что-то из fallback
         if not context:
             return extract_answer_from_context(query, "")
 
@@ -417,7 +417,7 @@ class VLLMGenerator:
         Returns:
             Generated answer (post-processed).
         """
-        # Даже пустой контекст должен вернуть что-то из fallback, чтобы не было "Недостаточно информации"
+        # Даже пустой контекст должен вернуть что-то из fallback
         if not context:
             return extract_answer_from_context(query, "")
 
@@ -458,12 +458,16 @@ class VLLMGenerator:
             List of generated answers.
         """
         prompts: list[str] = []
-        results: list[str] = []
+        results: list[str] = [""] * len(queries)
         batch_map: list[int] = []  # which index in output → which index in input
 
         for i, (query, context) in enumerate(zip(queries, contexts)):
             if not context:
-                results.append("Нет ответа.")
+                answer = extract_answer_from_context(query, "")
+                if not answer:
+                    sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
+                    answer = sentences[0] if sentences else query
+                results[i] = answer
             else:
                 prompts.append(self._build_prompt(query, context))
                 batch_map.append(i)
@@ -478,7 +482,7 @@ class VLLMGenerator:
                 answer = strip_preamble(answer)
                 answer = truncate_to_sentences(answer, MAX_SENTENCES)
                 answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
-                results.insert(batch_map[j], answer)
+                results[batch_map[j]] = answer
 
             gc.collect()
             torch.cuda.empty_cache()
@@ -488,9 +492,12 @@ class VLLMGenerator:
             logger.error("VLLM batch generation failed: %s", e)
             # fallback for each prompt individually
             for i in range(len(prompts)):
-                results.append(
-                    extract_answer_from_context(queries[batch_map[i]], contexts[batch_map[i]])
-                )
+                answer = extract_answer_from_context(queries[batch_map[i]], contexts[batch_map[i]])
+                if not answer:
+                    context = contexts[batch_map[i]]
+                    sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
+                    answer = sentences[0] if sentences else queries[batch_map[i]]
+                results[batch_map[i]] = answer
             return results
 
 
@@ -756,7 +763,9 @@ def run_pipeline(
                         logger.error("Failed to process q_id=%s: %s", q_id, inner_e, exc_info=True)
                         answer = extract_answer_from_context(query, context or "")
                         if not answer:
-                            answer = "Нет ответа."
+                            # Fallback to query-based extraction from context
+                            sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
+                            answer = sentences[0] if sentences else query
                         stats["failed"] += 1
 
                     if validate_answers and answer:
@@ -847,8 +856,10 @@ def run_pipeline(
             except Exception as e:
                 logger.error("Failed to process q_id=%s: %s", q_id, e, exc_info=True)
                 answer = extract_answer_from_context(query, context or "")
-                if not answer:  # если контекст был пустым — "Нет ответа."
-                    answer = "Нет ответа."
+                if not answer:
+                    # Fallback to query-based extraction from context
+                    sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
+                    answer = sentences[0] if sentences else query
                 stats["failed"] += 1
 
             # Шаг 3: Валидация
