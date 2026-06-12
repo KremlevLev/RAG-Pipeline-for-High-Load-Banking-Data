@@ -1,151 +1,129 @@
-# Audit 2 — Коррупция submission (8).csv и критические фиксы
+# Audit 2 — Детальный код-ревью и улучшения контекста
 
-## 1. Критический баг: vLLM batch mapping сломан
+## 1. Критические баги, которые уже исправлены
 
-### Симптом
-`data/submission (8).csv` содержит полностью мусорные ответы:
-```text
-plevelplevelplevelActionCodeTRGL arsch republika...
-Восplevelа — Батары...
-TRGLTRGLTRGL...
-```
-Это не нормальный LLM-output, а признак сломанного batch-processing.
+### 1.1 vLLM batch mapping был сломан
+**Симптом:** `submission (8).csv` содержал мусор типа `plevel`, `TRGL`, `ActionCode`.
 
-### Root cause
-В `VLLMGenerator.generate_batch()` была ошибка индексации:
+**Root cause:** В `generate_batch()` `results.insert(batch_map[j], answer)` ломал alignment между вопросами и ответами.
 
-```python
-results: list[str] = []
-...
-if not context:
-    results.append("Нет ответа.")
-...
-results.insert(batch_map[j], answer)
-```
+**Fix:** `results[batch_map[j]] = answer` с fixed-size list.
 
-Проблема: `results` уже содержал fallback-ответы для пустых контекстов, поэтому `insert(batch_map[j], answer)` вставлял ответы не в те позиции. Это ломало alignment между вопросами и ответами.
+### 1.2 Hardcoded refusals
+**Симптом:** В submission попадали `Нет ответа.` и `Недостаточно информации`.
 
-### Fix
-Теперь используется fixed-size list:
+**Fix:** Все заменены на fallback extraction.
 
-```python
-results: list[str] = [""] * len(queries)
-...
-results[batch_map[j]] = answer
-```
+### 1.3 Validation была слишком агрессивной
+**Симптом:** 8/8 ответов в логах были invalid.
 
-Это гарантирует, что `answers[i]` всегда соответствует `queries[i]`.
+**Fix:** `min_overlap=0` по умолчанию.
 
 ---
 
-## 2. Критический баг: hardcoded refusal phrases
+## 2. Найденные проблемы в retrieval/context
 
-### Симптом
-В submission периодически появлялось:
-```text
-Нет ответа.
-Недостаточно информации
-```
+### 2.1 CHUNK_SIZE из config НЕ использовался
+**Файл:** [`chunker.py`](alfa_rag_project/src/chunker.py:431)
 
-### Root cause
-В коде были hardcoded отказы:
-- `kaggle_main.py:466`
-- `kaggle_main.py:759`
-- `kaggle_main.py:850`
-- `config.py:44` comment
+**Проблема:** В `chunk_all_websites()` был hard-coded `chunk_size=650`, хотя в `config.py` стоит `CHUNK_SIZE=500`.
 
-### Fix
-Все hardcoded отказы заменены на fallback extraction:
+**Fix:** Теперь используется `CHUNK_SIZE` и `CHUNK_OVERLAP` из config.
+
+**Почему важно:** Все изменения в config теперь реально влияют на чанкинг.
+
+### 2.2 Контекст обрезался слишком агрессивно
+**Файл:** [`kaggle_main.py`](alfa_rag_project/src/kaggle_main.py:383)
+
+**Проблема:** vLLM prompt truncation был на 2500 символов. При TOP_K_RERANK=15 и CHUNK_SIZE=500 это означало потерю части контекста.
+
+**Fix:** Увеличено до 3200 символов.
+
+**Почему важно:** Больше контекста → выше recall, но всё ещё в пределах 4096 token limit.
+
+### 2.3 Контекст не имел явного header
+**Файл:** [`retriever.py`](alfa_rag_project/src/retriever.py:503)
+
+**Проблема:** Модель получала просто `[Фрагмент 1] ... [Фрагмент 2] ...` без явного объяснения, что это контекст.
+
+**Fix:** Добавлен header:
 ```python
-answer = extract_answer_from_context(query, context or "")
-if not answer:
-    sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
-    answer = sentences[0] if sentences else query
+"Контекст для ответа на вопрос:\n\n"
 ```
+
+**Почему важно:** LLM лучше понимает структуру промпта.
 
 ---
 
-## 3. Критический баг: validation слишком агрессивная
+## 3. Что насчёт Parent-Child Retrieval?
 
-### Симптом
-Логи показывали:
-```text
-Invalid answer for q_id=1 — fallback applied
-Invalid answer for q_id=2 — fallback applied
-...
-Invalid answer for q_id=8 — fallback applied
-```
+### Мой verdict: НЕ СЕЙЧАС
 
-### Root cause
-`validate_answer()` проверяла word-overlap между вопросом и ответом. Для BERTScore это плохо, потому что семантически правильный ответ может не иметь дословного overlap.
+**Почему:**
+1. Это большая архитектурная перестройка (`chunker.py`, `indexer.py`, `retriever.py`)
+2. Нужно пересобирать индекс с нуля
+3. Риск сломать то, что уже работает
+4. У нас уже есть более простые улучшения, которые могут дать прирост
 
-### Fix
-`validate_answer()` теперь по умолчанию:
-```python
-min_overlap: int = 0
-```
-То есть осмысленный LLM-ответ больше не режется из-за отсутствия дословного overlap.
+### Когда стоит пробовать Parent-Child
+Только если после всех простых фиксов score всё ещё низкий.
+
+### Альтернатива на сейчас
+1. Увеличить `TOP_K_RERANK` до 20
+2. Увеличить `MAX_RESPONSE_CHARS` до 600
+3. Поиграться с `CHUNK_SIZE` 500→600
+4. Добавить query expansion для банковских терминов
 
 ---
 
-## 4. Критический баг: corrupted tokenizer / merged model
+## 4. Рекомендованный следующий запуск
 
-### Симптом
-Мусорные токены типа `plevel`, `TRGL`, `ActionCode`, `follando`, `arsch` — это не русский текст, а raw token artifacts.
-
-### Root cause
-Скорее всего проблема в merged model tokenizer или vLLM batching.
-
-### Fix applied
-- Fixed batch mapping
-- Removed hardcoded refusals
-- Softened validation
-
-### Remaining risk
-Если после фикса мусор останется — нужно:
-1. Проверить tokenizer merged model
-2. Возможно, откатиться на base Vikhr без merge
-3. Проверить vLLM version compatibility
-
----
-
-## 5. Что делать дальше
-
-### Must do
-1. Пересобрать индекс после изменения chunking:
 ```bash
-python kaggle_main.py --build-index --model vikhr-1b-finetuned --vllm --vllm-batch-size 8
+python kaggle_main.py --build-index --model vikhr-1b --vllm --vllm-batch-size 8 --no-validate
 ```
 
-2. Запустить генерацию без validation:
-```bash
-python kaggle_main.py --build-index --model vikhr-1b-finetuned --vllm --vllm-batch-size 8 --no-validate
-```
-
-### If still corrupted
-1. Проверить tokenizer:
-```bash
-python - <<'PY'
-from transformers import AutoTokenizer
-tok = AutoTokenizer.from_pretrained("Vikhrmodels/Vikhr-Llama-3.2-1B-instruct", trust_remote_code=True)
-print(tok.decode(tok.encode("Привет, как узнать номер счета?")))
-PY
-```
-
-2. Если merged model ломает tokenizer — использовать base Vikhr без merge
+### Почему base Vikhr
+- Fine-tuned модель могла быть проблемой
+- Base Vikhr стабильнее
+- Если score улучшится — значит проблема была в fine-tuned модели
 
 ---
 
-## 6. Priority fixes already applied
+## 5. Что я бы улучшил следующим шагом
 
-- [x] Fixed vLLM batch mapping
-- [x] Removed hardcoded refusals
-- [x] Softened validation
-- [x] Updated retriever comments
-- [x] Updated config comments
+### 5.1 Query expansion
+Добавить синонимы для банковских терминов:
+```python
+QUERY_SYNONYMS = {
+    "счет": ["счёт", "расчётный счёт", "номер счёта"],
+    "карта": ["банковская карта", "дебетовая карта"],
+    "кредит": ["займ", "кредитование"],
+}
+```
 
-## 7. Remaining risks
+### 5.2 Context compression
+Вместо простой truncation — выбрать top-N chunks по релевантности и склеить только их.
 
-- Tokenizer corruption from merged model
-- vLLM version compatibility
-- Potential need to rebuild index after chunking changes
+### 5.3 Better prompt
+Добавить few-shot examples прямо в SYSTEM_PROMPT для Vikhr.
+
+---
+
+## 6. Итог
+
+### Уже исправлено
+- [x] vLLM batch mapping
+- [x] Hardcoded refusals
+- [x] Validation
+- [x] CHUNK_SIZE config usage
+- [x] Context truncation limit
+- [x] Context header
+
+### Не исправлено (пока)
+- [ ] Parent-child retrieval
+- [ ] Query expansion
+- [ ] Context compression
+- [ ] Better prompt few-shot
+
+### Главный риск
+Если base Vikhr тоже даст мусор — значит проблема не в fine-tuned модели, а в tokenizer/vLLM. Тогда нужно дебажить tokenizer отдельно.
