@@ -421,11 +421,13 @@ class VLLMGenerator:
         self,
         model_name: str = "lirex111/vikhrllama1B_AlfaBank",
         fast_gpu: bool = False,
+        tensor_parallel_size: int = 1,
     ):
         """
         Args:
             model_name: Hugging Face model identifier.
             fast_gpu: Режим для одной L4 (24GB) — больше памяти под vLLM
+            tensor_parallel_size: Число GPU для tensor parallelism (2 для 2xT4)
         """
         self.model_name = model_name
 
@@ -448,6 +450,7 @@ class VLLMGenerator:
             trust_remote_code=True,
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=4096,           # достаточно для контекста + ответа
+            tensor_parallel_size=tensor_parallel_size,
         )
 
         # Стандартные параметры сэмплирования
@@ -724,12 +727,16 @@ def run_pipeline(
         fast_gpu: Режим для одной L4 (24GB) — больше памяти под vLLM
     """
     # ── Fast quality mode ────────────────────────────────────
+    tensor_parallel_size = 1
     if fast_quality:
         logger.info("Fast quality mode enabled: fewer candidates + stronger model")
         if llm_model == "vikhr-1b-finetuned":
             llm_model = "qwen2.5-7b"
         use_vllm = True
         vllm_batch_size = max(vllm_batch_size, 16)
+        if torch.cuda.device_count() >= 2:
+            tensor_parallel_size = 2
+            logger.info("Fast quality: using tensor_parallel_size=2 for 2xT4")
 
     # ── Индекс ────────────────────────────────────────────────
     if build_index or not INDEX_PATH.exists():
@@ -774,7 +781,11 @@ def run_pipeline(
         vllm_model_name = hf_model_name
 
     if use_vllm:
-        generator = VLLMGenerator(model_name=vllm_model_name, fast_gpu=fast_gpu)
+        generator = VLLMGenerator(
+            model_name=vllm_model_name,
+            fast_gpu=fast_gpu,
+            tensor_parallel_size=tensor_parallel_size,
+        )
         if fast_gpu:
             logger.info("Using vLLM generator on fastGPU/L4 mode (gpu_memory_utilization=0.80)")
         else:
