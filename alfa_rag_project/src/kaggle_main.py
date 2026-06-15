@@ -734,6 +734,7 @@ def run_pipeline(
             llm_model = "qwen2.5-7b"
         use_vllm = True
         vllm_batch_size = max(vllm_batch_size, 16)
+        fast_gpu = True  # More vLLM memory for KV cache on 2xT4
         if torch.cuda.device_count() >= 2:
             tensor_parallel_size = 2
             logger.info("Fast quality: using tensor_parallel_size=2 for 2xT4")
