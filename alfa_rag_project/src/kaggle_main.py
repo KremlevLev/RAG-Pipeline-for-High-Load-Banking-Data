@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 KAGGLE_MODELS = {
     "vikhr-1b-finetuned": "lirex111/vikhrllama1B_AlfaBank",  # Fine-tuned Vikhr-1B for Alfa-Bank (RECOMMENDED)
     "vikhr-1b": "Vikhrmodels/Vikhr-Llama-3.2-1B-instruct",  # Base 1B model
+    "qwen2.5-3b": "Qwen/Qwen2.5-3B-Instruct",
     "qwen2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "qwen2-7b": "Qwen/Qwen2-7B-Instruct",
     "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.3",
@@ -450,8 +451,9 @@ class VLLMGenerator:
             dtype="float16",
             trust_remote_code=True,
             gpu_memory_utilization=gpu_memory_utilization,
-            max_model_len=4096,           # достаточно для контекста + ответа
+            max_model_len=3072,           # меньше KV cache для T4
             tensor_parallel_size=tensor_parallel_size,
+            enforce_eager=True,           # FIX: avoid cudagraph OOM on T4
         )
 
         # Стандартные параметры сэмплирования
@@ -732,7 +734,7 @@ def run_pipeline(
     if fast_quality:
         logger.info("Fast quality mode enabled: fewer candidates + stronger model")
         if llm_model == "vikhr-1b-finetuned":
-            llm_model = "qwen2.5-7b"
+            llm_model = "qwen2.5-3b"
         use_vllm = True
         vllm_batch_size = max(vllm_batch_size, 16)
         fast_gpu = True  # More vLLM memory for KV cache on 2xT4
