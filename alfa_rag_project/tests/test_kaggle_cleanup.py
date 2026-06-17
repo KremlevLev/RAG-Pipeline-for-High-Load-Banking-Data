@@ -17,6 +17,18 @@ class TestGarbageDetection:
         answer = "Номер undergoingётного счёта можно узнать в личном кабинете"
         assert is_garbage_answer(answer) is True
 
+    def test_detects_cjk_and_mixed_script_tokens(self) -> None:
+        answer = "*baseи移到 На главной странице интернет-банка"
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_hyphenated_mixed_script_tokens(self) -> None:
+        answer = "_Imageли не приходит enroll-уведомление, банк пришлет SMS."
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_underscore_mixed_script_tokens(self) -> None:
+        answer = "В интернет-б_song выберите раздел «Карты»."
+        assert is_garbage_answer(answer) is True
+
     def test_detects_suspicious_latin_token(self) -> None:
         answer = "Сумма POLITICOfgets бүтүндер и иных социальных выплат"
         assert is_garbage_answer(answer) is True
@@ -41,6 +53,14 @@ class TestReferenceCleaning:
         answer = "В Фрагмент 5: история платежей отображает магазин и бонусы."
         assert clean_reference_answer(answer) == "история платежей отображает магазин и бонусы."
 
+    def test_strips_allowed_reference_preamble_and_answer_label(self) -> None:
+        answer = "Согласно предоставленным фрагментам, уведомления приходят в SMS. Ответ: Нет ответа."
+        assert clean_reference_answer(answer) == "уведомления приходят в SMS. Нет ответа."
+
+    def test_strips_context_fragment_sentence(self) -> None:
+        answer = "Если push не доставлен, банк пришлет SMS. Также, в Фрагменте 5 указан номер телефона. Ответ: Позвоните."
+        assert clean_reference_answer(answer) == "Если push не доставлен, банк пришлет SMS. Позвоните."
+
 
 class TestFinalizeGeneratedAnswer:
     """Tests for garbage rescue fallback."""
@@ -61,3 +81,12 @@ class TestFinalizeGeneratedAnswer:
             "Номер счёта можно посмотреть в договоре.",
         )
         assert result == "Номер счёта можно посмотреть в личном кабинете."
+
+    def test_rescues_submission20_mixed_script_with_reference(self) -> None:
+        result = finalize_generated_answer(
+            "*baseи移到 На главной странице интернет-банка в левом меню выберите раздел «Карты»",
+            "Где посмотреть счета?",
+            "На главной странице интернет-банка в левом меню выберите раздел «Карты».",
+            "На главной странице интернет-банка в левом меню выберите раздел «Карты».",
+        )
+        assert result == "На главной странице интернет-банка в левом меню выберите раздел «Карты»."
