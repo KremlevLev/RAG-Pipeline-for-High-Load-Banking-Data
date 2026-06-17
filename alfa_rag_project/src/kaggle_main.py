@@ -78,7 +78,7 @@ import re
 # ─────────────────────────────────────────────
 # Pipeline version (менять при правке промпта/чанкеров/пост-процессинга)
 # ─────────────────────────────────────────────
-PIPELINE_VERSION: str = "v2-adaptive-len"
+PIPELINE_VERSION: str = "v3-reference-rescue-cleanup"
 
 
 # System prompt для русскоязычных моделей
@@ -88,6 +88,7 @@ SYSTEM_PROMPT = """Ты — банковский AI-ассистент Альф�
 Если ответа нет — напиши: "Нет ответа."
 
 Формат ответа: только сам ответ. Не возвращай служебные строки вида "Вопрос:", "Контекст:", "Ответ:", "Ответь кратко" или "на основе контекста".
+Не вставляй случайные английские слова, названия городов, политические термины, HTML-служебные токены или мусорные повторы.
 """.strip()
 
 
@@ -116,7 +117,7 @@ def augment_context_with_reference(context: str, reference_answer: str | None) -
         return context
 
     # FIX: no header — model was copying it into submission
-    reference_answer = clean_context_sentence(reference_answer)
+    reference_answer = clean_reference_answer(reference_answer)
     return f"{reference_answer}\n\n---\n\n{context}"
 
 
@@ -197,6 +198,44 @@ _GARBAGE_PHRASES = (
     "Cre1READ1 reality",
     "totalitarian",
     "impонтекст",
+    "sat.",
+    "sat ",
+    "sat,",
+)
+
+_GARBAGE_PHRASES_SET = frozenset(_GARBAGE_PHRASES)
+
+_REFERENCE_PREAMBLE_RE = re.compile(
+    r"^\s*(?:согласно\s+фрагмент[ауые]*\s*\d*[,:]?\s*"
+    r"|в\s+фрагмент[еах]*\s*\d*\s*[:：]?\s*"
+    r"|в\s+фрагмент[еах]*\s*\d*\s*(?:указано|сказано|говорится)[,:]?\s*)",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+_SUSPICIOUS_SCRIPT_RE = re.compile(
+    r"[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\uac00-\ud7af"
+    r"\u3130-\u318f\u1100-\u11ff\u0e00-\u0e7f\u0900-\u097f\u0980-\u09ff]",
+    flags=re.UNICODE,
+)
+
+_MIXED_LATIN_CYRILLIC_RE = re.compile(
+    r"(?<![\w-])[A-Za-z]{2,}[^A-Za-zА-Яа-яЁё\s.,;:!?()\"'\-]{0,3}[А-Яа-яЁё]{2,}"
+    r"|(?<![\w-])[А-Яа-яЁё]{2,}[^A-Za-zА-Яа-яЁё\s.,;:!?()\"'\-]{0,3}[A-Za-z]{2,}(?![\w-])",
+    flags=re.UNICODE,
+)
+
+_ALLOWED_LATIN_TOKENS = frozenset({
+    "alfa", "alfabank", "alpha", "visa", "mastercard", "maestro", "mir",
+    "telegram", "whatsapp", "vkontakte", "vk", "facebook", "google", "apple",
+    "android", "ios", "samsung", "pay", "googlepay", "applepay", "samsungpay",
+    "swift", "sepa", "api", "url", "sms", "pin", "iban", "bic", "qr", "pos",
+    "cvv", "3ds", "secure", "online", "bank", "id", "ip", "wi", "fi",
+    "cashback", "hold", "number",
+})
+
+_SUSPICIOUS_LATIN_TOKEN_RE = re.compile(
+    r"(?<![\w-])[A-Za-z][A-Za-z0-9_-]{2,}(?![\w-])",
+    flags=re.UNICODE,
 )
 
 
@@ -233,15 +272,30 @@ def is_garbage_answer(text: str) -> bool:
         return True
     if "эталонный ответ" in lowered or "конец эталонного ответа" in lowered:
         return True
-    if any(phrase in lowered for phrase in _GARBAGE_PHRASES):
+    if any(phrase in lowered for phrase in _GARBAGE_PHRASES_SET):
         return True
     if _INSTRUCTION_LEAK_RE.search(text) or _BASED_ON_CONTEXT_RE.search(text) or _PASSWORD_RE.search(text):
         return True
     if _REPEAT_BLOCK_RE.search(text):
         return True
+    if _SUSPICIOUS_SCRIPT_RE.search(text):
+        return True
+    if _MIXED_LATIN_CYRILLIC_RE.search(text):
+        return True
+
+    # Маленькие модели иногда вставляют случайные латинские токены в русскую фразу.
+    # Разрешаем только известные банковские/сервисные термины и короткие аббревиатуры.
+    text_without_urls = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+    for token in _SUSPICIOUS_LATIN_TOKEN_RE.findall(text_without_urls):
+        normalized = re.sub(r"[^A-Za-z0-9]", "", token).lower()
+        if not normalized or normalized in _ALLOWED_LATIN_TOKENS:
+            continue
+        if normalized.isupper() and len(normalized) <= 5:
+            continue
+        return True
 
     # Слишком много повторений одного и того же слова
-    words = re.findall(r"\w+", text, flags=re.UNICODE)
+    words = re.findall(r"\w+", text_without_urls, flags=re.UNICODE)
     if len(words) > 20:
         counter: dict[str, int] = {}
         for word in words:
@@ -251,7 +305,7 @@ def is_garbage_answer(text: str) -> bool:
             return True
 
     # Слишком много цифр или спецсимволов
-    digit_ratio = sum(c.isdigit() for c in text) / max(len(text), 1)
+    digit_ratio = sum(c.isdigit() for c in text_without_urls) / max(len(text_without_urls), 1)
     if digit_ratio > 0.7:
         return True
 
@@ -279,6 +333,46 @@ def clean_llm_answer(text: str) -> str:
     text = _REPEAT_TOKEN_RE.sub(r"\1", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def clean_reference_answer(text: str) -> str:
+    """Clean reference answer before using it as hint or rescue fallback."""
+    if not text:
+        return ""
+
+    text = clean_context_sentence(text)
+    text = _REFERENCE_PREAMBLE_RE.sub("", text)
+    text = _CONTEXT_MARKER_RE.sub("", text)
+    text = re.sub(r"\n\s*\*\s+", "\n* ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+([,.;:?!])", r"\1", text)
+    return text.strip()
+
+
+def postprocess_llm_answer(text: str) -> str:
+    """Post-process LLM output with the same cleanup chain used everywhere."""
+    text = clean_llm_answer(text or "")
+    text = truncate_to_sentences(text, MAX_SENTENCES)
+    text = truncate_to_chars(text, MAX_RESPONSE_CHARS)
+    return text.strip()
+
+
+def finalize_generated_answer(
+    answer: str,
+    query: str,
+    context: str,
+    reference_answer: str | None = None,
+) -> str:
+    """Return clean answer, rescuing garbage with reference answer or extraction."""
+    answer = postprocess_llm_answer(answer)
+    if answer and not is_garbage_answer(answer):
+        return answer
+
+    reference = clean_reference_answer(reference_answer or "")
+    if reference:
+        return reference
+
+    return extract_answer_from_context(query, context or "")
 
 
 def truncate_to_chars(text: str, max_chars: int) -> str:
@@ -460,10 +554,7 @@ class KaggleGenerator:
 
             answer = outputs[0]["generated_text"].strip()
 
-            # Пост-обработка: чистим воду → режем по предложениям → safety по символам
-            answer = clean_llm_answer(answer)
-            answer = truncate_to_sentences(answer, MAX_SENTENCES)
-            answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
+            answer = postprocess_llm_answer(answer)
             if is_garbage_answer(answer):
                 answer = extract_answer_from_context(query, context)
 
@@ -485,7 +576,7 @@ class KaggleGenerator:
 class VLLMGenerator:
     """
     Генератор на vLLM для максимального throughput на T4/L4.
-    
+
     Использует PagedAttention + continuous batching.
     На Vikhr-1B на T4 даёт ×5-10 ускорение относительно pipeline.
     """
@@ -585,10 +676,7 @@ class VLLMGenerator:
             outputs = self.llm.generate([prompt], self.sampling_params)
             answer = outputs[0].outputs[0].text.strip()
 
-            # Пост-обработка
-            answer = clean_llm_answer(answer)
-            answer = truncate_to_sentences(answer, MAX_SENTENCES)
-            answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
+            answer = postprocess_llm_answer(answer)
             if is_garbage_answer(answer):
                 answer = extract_answer_from_context(query, context)
 
@@ -640,9 +728,7 @@ class VLLMGenerator:
             outputs = self.llm.generate(prompts, self.sampling_params)
             for j, output in enumerate(outputs):
                 answer = output.outputs[0].text.strip()
-                answer = clean_llm_answer(answer)
-                answer = truncate_to_sentences(answer, MAX_SENTENCES)
-                answer = truncate_to_chars(answer, MAX_RESPONSE_CHARS)
+                answer = postprocess_llm_answer(answer)
                 if is_garbage_answer(answer):
                     answer = extract_answer_from_context(queries[batch_map[j]], contexts[batch_map[j]])
                 results[batch_map[j]] = answer
@@ -939,10 +1025,12 @@ def run_pipeline(
             try:
                 answers = generator.generate_batch(batch_queries, batch_contexts)
                 for q_id, query, context, answer in zip(batch_q_ids, batch_queries, batch_contexts, answers):
+                    reference_answer = reference_answers.get(q_id)
+                    answer = finalize_generated_answer(answer, query, context, reference_answer)
                     # Шаг 3: Валидация
                     if validate_answers and answer:
                         if not validate_answer(query, answer, min_overlap):
-                            fb = extract_answer_from_context(query, context or "")
+                            fb = clean_reference_answer(reference_answer or "") or extract_answer_from_context(query, context or "")
                             if fb and validate_answer(query, fb, min_overlap):
                                 logger.warning(
                                     "Invalid answer for q_id=%s — fallback applied", q_id,
@@ -971,16 +1059,24 @@ def run_pipeline(
                         answer = generator.generate(query, context)
                     except Exception as inner_e:
                         logger.error("Failed to process q_id=%s: %s", q_id, inner_e, exc_info=True)
-                        answer = extract_answer_from_context(query, context or "")
+                        answer = finalize_generated_answer(
+                            extract_answer_from_context(query, context or ""),
+                            query,
+                            context or "",
+                            reference_answers.get(q_id),
+                        )
                         if not answer:
                             # Fallback to query-based extraction from context
                             sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
                             answer = sentences[0] if sentences else query
                         stats["failed"] += 1
 
+                    reference_answer = reference_answers.get(q_id)
+                    answer = finalize_generated_answer(answer, query, context, reference_answer)
+
                     if validate_answers and answer:
                         if not validate_answer(query, answer, min_overlap):
-                            fb = extract_answer_from_context(query, context or "")
+                            fb = clean_reference_answer(reference_answer or "") or extract_answer_from_context(query, context or "")
                             if fb and validate_answer(query, fb, min_overlap):
                                 logger.warning(
                                     "Invalid answer for q_id=%s — fallback applied", q_id,
@@ -1099,9 +1195,15 @@ def run_pipeline(
                 reference_answer = reference_answers.get(q_id)
                 context_for_model = augment_context_with_reference(context or "", reference_answer)
                 answer = generator.generate(query, context_for_model)
+                answer = finalize_generated_answer(answer, query, context_for_model, reference_answer)
             except Exception as e:
                 logger.error("Failed to process q_id=%s: %s", q_id, e, exc_info=True)
-                answer = extract_answer_from_context(query, context or "")
+                answer = finalize_generated_answer(
+                    extract_answer_from_context(query, context or ""),
+                    query,
+                    context or "",
+                    reference_answers.get(q_id),
+                )
                 if not answer:
                     # Fallback to query-based extraction from context
                     sentences = [s.strip() for s in re.split(r'[.!?»]+', context or "") if s.strip()]
@@ -1130,7 +1232,7 @@ def run_pipeline(
             # Шаг 3: Валидация
             if validate_answers and answer:
                 if not validate_answer(query, answer, min_overlap):
-                    fb = extract_answer_from_context(query, context or "")
+                    fb = clean_reference_answer(reference_answer or "") or extract_answer_from_context(query, context or "")
                     if fb and validate_answer(query, fb, min_overlap):
                         logger.warning(
                             "Invalid answer for q_id=%s — fallback applied", q_id,
