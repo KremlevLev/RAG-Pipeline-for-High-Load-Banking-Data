@@ -78,7 +78,7 @@ import re
 # ─────────────────────────────────────────────
 # Pipeline version (менять при правке промпта/чанкеров/пост-процессинга)
 # ─────────────────────────────────────────────
-PIPELINE_VERSION: str = "v4-mixed-script-cleanup"
+PIPELINE_VERSION: str = "v5-submission22-cleanup"
 
 
 # System prompt для русскоязычных моделей
@@ -161,6 +161,24 @@ _NO_ANSWER_CONTEXT_REPEAT_RE = re.compile(
 _CONTEXT_MARKER_RE = re.compile(r"\[?\s*фрагмент\s*\d+\s*\]?[:：]?\s*", flags=re.IGNORECASE | re.UNICODE)
 _REPEAT_TOKEN_RE = re.compile(r"\b(\w+)\s+\1\b", flags=re.IGNORECASE | re.UNICODE)
 _REPEAT_BLOCK_RE = re.compile(r"\b([A-Za-zА-Яа-яЁё]{4,})\1{2,}\b", flags=re.IGNORECASE | re.UNICODE)
+_REPEAT_SHORT_TOKEN_RE = re.compile(
+    r"(?:^|[_\W])([A-Za-zА-Яа-яЁё]{2,4})(?:\1){8,}",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+_REPEAT_PUNCTUATION_RE = re.compile(
+    r"^\s*(?:[*#_\-/\\|])\s*(?:[*#_\-/\\|]\s*){15,}$",
+    flags=re.UNICODE,
+)
+_DUPLICATED_QUESTION_RE = re.compile(
+    r"(?:^\s*.{5,140}\?\s+[А-Яа-яЁё][^.!?]{20,}"
+    r"|на\s+вопрос\s*[\"']?.{5,100}\?\s*.{5,100}\?)",
+    flags=re.IGNORECASE | re.UNICODE | re.DOTALL,
+)
+_INCOMPLETE_ANSWER_RE = re.compile(
+    r"(?:зачислены\s+ли|поступили\s+ли\s+средства|проверить,\s+зачислены\s+ли"
+    r"|есть\s+несколько\s+способов\s+проверить,\s+зачислены\s+ли)$",
+    flags=re.IGNORECASE | re.UNICODE,
+)
 _REFERENCE_HEADER_RE = re.compile(
     r"\n?\s*===\s*эталонный ответ.*?===\s*\n?",
     flags=re.IGNORECASE | re.UNICODE | re.DOTALL,
@@ -197,10 +215,11 @@ _GARBAGE_PHRASES = (
     "Raven reality",
     "Cre1READ1 reality",
     "totalitarian",
-    "impонтекст",
-    "sat.",
-    "sat ",
-    "sat,",
+   "impонтекст",
+   "где мои деньги",
+   "sat.",
+   "sat ",
+   "sat,",
 )
 
 _GARBAGE_PHRASES_SET = frozenset(_GARBAGE_PHRASES)
@@ -309,7 +328,9 @@ def is_garbage_answer(text: str) -> bool:
         return True
     if _INSTRUCTION_LEAK_RE.search(text) or _BASED_ON_CONTEXT_RE.search(text) or _PASSWORD_RE.search(text):
         return True
-    if _REPEAT_BLOCK_RE.search(text):
+    if _REPEAT_BLOCK_RE.search(text) or _REPEAT_SHORT_TOKEN_RE.search(text) or _REPEAT_PUNCTUATION_RE.search(text):
+        return True
+    if _DUPLICATED_QUESTION_RE.search(text) or _INCOMPLETE_ANSWER_RE.search(text):
         return True
     if _SUSPICIOUS_SCRIPT_RE.search(text):
         return True

@@ -41,6 +41,37 @@ class TestGarbageDetection:
         answer = "Проверьте SMS, IBAN, QR-код и 3-D Secure в интернет-банке."
         assert is_garbage_answer(answer) is False
 
+    def test_detects_submission22_repeated_stars(self) -> None:
+        answer = "* " * 180
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_submission22_short_token_repetition(self) -> None:
+        answer = "_perperperperperperperperperperperperperperperperperperperperper"
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_submission22_duplicated_question_text(self) -> None:
+        answer = (
+            "Могу ли я заблокировать карту, если она была утеряна или украдена? "
+            "Чтобы узнать о списаниях со счёта, авторизуются в банковском приложении."
+        )
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_submission22_chat_question_repetition(self) -> None:
+        answer = (
+            "Я сразу положила обратно 10тр, и приложение написало что долг -800р. "
+            "Откуда вдруг стал увеличиваться долг? Для доступа к Счету Кредитной карты "
+            "Клиент вправе обратиться в Банк."
+        )
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_submission22_where_my_money_phrase(self) -> None:
+        answer = "Не пришли деньги на карту, хотя приложение отображает поступление. Где мои деньги, которые пришли на карту?"
+        assert is_garbage_answer(answer) is True
+
+    def test_detects_submission22_incomplete_answer(self) -> None:
+        answer = "Внесла платёж, хочу узнать поступили ли средства. Есть несколько способов проверить, зачислены ли"
+        assert is_garbage_answer(answer) is True
+
 
 class TestReferenceCleaning:
     """Tests for reference answer cleanup."""
