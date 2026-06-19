@@ -1028,6 +1028,11 @@ def run_pipeline(
         if torch.cuda.device_count() >= 2:
             tensor_parallel_size = 2
             logger.info("Fast quality: using tensor_parallel_size=2 for 2xT4")
+        # Speed: reduce candidate pool to stay under 6.5s/question
+        import config as _cfg
+        _cfg.TOP_K_RETRIEVAL = min(_cfg.TOP_K_RETRIEVAL, 30)
+        _cfg.TOP_K_BM25 = min(_cfg.TOP_K_BM25, 15)
+        _cfg.TOP_K_RERANK = min(_cfg.TOP_K_RERANK, 8)
 
     # ── Индекс ────────────────────────────────────────────────
     if build_index or not INDEX_PATH.exists():

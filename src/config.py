@@ -37,10 +37,10 @@ PARENT_CHUNK_SIZE: Final[int] = 1100  # Enough context to answer without floodin
 PARENT_CHUNK_OVERLAP: Final[int] = 220  # Sentence-aware overlap between parent chunks
 PARENT_CHILD_ENABLED: Final[bool] = True  # Default production mode
 
-# Retrieval parameters - optimized for quality
-TOP_K_RETRIEVAL: Final[int] = 80  # Number of child candidates from FAISS
-TOP_K_BM25: Final[int] = 50  # Number of child candidates from BM25
-TOP_K_RERANK: Final[int] = 15  # Number of final reranked parent chunks
+# Retrieval parameters - optimized for speed (≤6.5s per question on 2xT4)
+TOP_K_RETRIEVAL: Final[int] = 40  # Child candidates from FAISS (was 80 — too slow)
+TOP_K_BM25: Final[int] = 20  # Child candidates from BM25 (was 50 — too slow)
+TOP_K_RERANK: Final[int] = 10  # Number of final reranked parent chunks (was 15)
 TOP_K_CONTEXT: Final[int] = 8  # Number of parent chunks passed to LLM to avoid context flooding
 
 # Reranker batch size for memory efficiency (prevents CUDA OOM)
