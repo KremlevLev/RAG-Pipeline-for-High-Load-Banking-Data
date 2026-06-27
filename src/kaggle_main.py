@@ -1113,8 +1113,8 @@ def run_pipeline(
     stats = {"cached": 0, "generated": 0, "failed": 0, "invalid": 0}
     CHECKPOINT_INTERVAL = 2000
 
-    # Speed guard: stop if generation is too slow to finish in 12h
-    SPEED_GUARD_ENABLED = True
+    # Speed guard: отключён по просьбе пользователя (мешал полной генерации)
+    SPEED_GUARD_ENABLED = False
     SPEED_GUARD_MIN_GENERATIONS = 20
     SPEED_GUARD_MAX_AVG_SECONDS = 6.5
     generation_start_time: float | None = None
