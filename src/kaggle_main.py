@@ -27,16 +27,17 @@ from transformers.utils import is_flash_attn_2_available
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    DATA_DIR,
-    INDEX_PATH,
-    QUESTIONS_CSV,
-    SUBMISSION_CSV,
-    WEBSITES_CSV,
-    MAX_SENTENCES,
-    MAX_RESPONSE_WORDS,
-    MAX_RESPONSE_CHARS,
-    TEMPERATURE,
-    LLM_TIMEOUT,
+   DATA_DIR,
+   INDEX_PATH,
+   QUESTIONS_CSV,
+   SUBMISSION_CSV,
+   WEBSITES_CSV,
+   MAX_SENTENCES,
+   MAX_RESPONSE_WORDS,
+   MAX_RESPONSE_CHARS,
+   TEMPERATURE,
+   LLM_TIMEOUT,
+   RERANKER_MODEL,
 )
 from generator import clean_context_sentence, extract_answer_from_context
 from indexer import build_and_save_index, load_index
@@ -1060,6 +1061,13 @@ def run_pipeline(
     # ── Reference answers as dominant hints ───────────────────
     reference_answers = load_reference_answers()
 
+    # ── OOM fix: move reranker to CPU if vLLM will use both GPUs ──
+    if use_vllm and torch.cuda.device_count() >= 2:
+        device_count = torch.cuda.device_count()
+        logger.info("OOM fix: moving reranker to CPU (vLLM will use %d GPUs)", device_count)
+        from sentence_transformers import CrossEncoder
+        retriever.reranker = CrossEncoder(RERANKER_MODEL, device="cpu")
+
     # Очистка памяти после загрузки reranker'а
     gc.collect()
     torch.cuda.empty_cache()
@@ -1090,6 +1098,10 @@ def run_pipeline(
         generator = KaggleGenerator(model_name=hf_model_name)
 
     # Финальная очистка памяти перед циклом генерации
+    # OOM fix: unload embedder model from GPU — only FAISS index + BM25 are needed
+    if hasattr(indexer, "model") and indexer.model is not None:
+        logger.info("OOM fix: moving embedder model to CPU to free GPU memory")
+        indexer.model = indexer.model.to("cpu")
     gc.collect()
     torch.cuda.empty_cache()
     logger.info("Memory cleared after generator init — starting inference loop")
